@@ -35,6 +35,12 @@ except ImportError:
 
 PI = np.pi
 
+# ===== STAŁE KONFIGURACYJNE =====
+# Dokładność przetwarzania - im mniejsza wartość, tym więcej punktów
+CONTOUR_APPROXIMATION_FACTOR = 0.05  # Oryginalnie 0.02 - zwiększone dla uproszczenia
+EDGE_POINT_STEP = 1  # Co ile punktów brać z konturów (1 = wszystkie, 3 = co trzeci)
+MAX_POINTS_PER_PATH = 1000  # Maksymalna liczba punktów na ścieżkę
+
 class RobotKinematics:
     """Kinematyka robota PUMA (z calcDegrees.py i ikpy_vis.py)"""
     
@@ -229,9 +235,28 @@ class ImageProcessor:
             roi_gray = cv.cvtColor(roi, cv.COLOR_BGR2GRAY)
             edges = cv.Canny(roi_gray, 100, 200)
             
-            # Wyciąganie konturów jako sekwencji punktów
-            conts, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE)
-            self.edge_paths = [[tuple(pt[0]) for pt in cnt] for cnt in conts]
+            # Wyciąganie konturów jako sekwencji punktów z uproszczeniem
+            conts, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+            
+            # Uprość kontury i ogranicz liczbę punktów
+            simplified_edge_paths = []
+            for cnt in conts:
+                # Uprość kontur
+                simplified = cv.approxPolyDP(cnt, CONTOUR_APPROXIMATION_FACTOR * cv.arcLength(cnt, True), True)
+                points = [tuple(pt[0]) for pt in simplified]
+                
+                # Ogranicz liczbę punktów
+                if len(points) > MAX_POINTS_PER_PATH:
+                    step = max(1, len(points) // MAX_POINTS_PER_PATH)
+                    points = points[::step]
+                
+                # Zastosuj dodatkowy krok dla dalszego uproszczenia
+                points = points[::EDGE_POINT_STEP]
+                
+                if len(points) > 2:  # Tylko jeśli ma sens
+                    simplified_edge_paths.append(points)
+            
+            self.edge_paths = simplified_edge_paths
             
             return True, f"Wykryto {len(self.edge_paths)} ścieżek krawędzi"
             
@@ -266,11 +291,18 @@ class ImageProcessor:
             min_area = 500
             filtered_contours = [cnt for cnt in contours if cv.contourArea(cnt) > min_area]
             
-            # Konwertuj do formatu używanego w aplikacji
+            # Konwertuj do formatu używanego w aplikacji z uproszczeniem
             result_contours = []
             for cnt in filtered_contours:
-                simplified = cv.approxPolyDP(cnt, 0.02 * cv.arcLength(cnt, True), True)
+                # Użyj globalnej stałej dla uproszczenia
+                simplified = cv.approxPolyDP(cnt, CONTOUR_APPROXIMATION_FACTOR * cv.arcLength(cnt, True), True)
                 points = [(int(point[0][0]), int(point[0][1])) for point in simplified]
+                
+                # Ogranicz liczbę punktów jeśli za dużo
+                if len(points) > MAX_POINTS_PER_PATH:
+                    step = max(1, len(points) // MAX_POINTS_PER_PATH)
+                    points = points[::step]
+                
                 result_contours.append(np.array(points, dtype=np.int32))
             
             # Przetwarzanie jak w oryginalnej metodzie
@@ -282,9 +314,28 @@ class ImageProcessor:
             roi_gray = cv.cvtColor(roi, cv.COLOR_BGR2GRAY)
             edges = cv.Canny(roi_gray, 100, 200)
             
-            # Wyciąganie konturów jako sekwencji punktów
-            conts, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE)
-            self.edge_paths = [[tuple(pt[0]) for pt in cnt] for cnt in conts]
+            # Wyciąganie konturów jako sekwencji punktów z uproszczeniem
+            conts, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+            
+            # Uprość kontury i ogranicz liczbę punktów (jak wyżej)
+            simplified_edge_paths = []
+            for cnt in conts:
+                # Uprość kontur
+                simplified = cv.approxPolyDP(cnt, CONTOUR_APPROXIMATION_FACTOR * cv.arcLength(cnt, True), True)
+                points = [tuple(pt[0]) for pt in simplified]
+                
+                # Ogranicz liczbę punktów
+                if len(points) > MAX_POINTS_PER_PATH:
+                    step = max(1, len(points) // MAX_POINTS_PER_PATH)
+                    points = points[::step]
+                
+                # Zastosuj dodatkowy krok dla dalszego uproszczenia
+                points = points[::EDGE_POINT_STEP]
+                
+                if len(points) > 2:  # Tylko jeśli ma sens
+                    simplified_edge_paths.append(points)
+            
+            self.edge_paths = simplified_edge_paths
             
             print(f"Automatycznie wykryto {len(self.edge_paths)} ścieżek krawędzi")
             return True, f"Automatycznie wykryto {len(self.edge_paths)} ścieżek"
@@ -333,7 +384,8 @@ class LightPaintingSimulator(tk.Tk):
         # Stan symulacji
         self.robot_paths = []
         self.trajectory_points = []
-        self.light_painting_dots = []  # Kropki light painting
+        self.light_painting_dots = []  # Kropki light painting (2D)
+        self.light_painting_3d_dots = []  # Kropki light painting (3D)
         self.simulation_running = False
         self.animation = None
         
@@ -393,6 +445,12 @@ class LightPaintingSimulator(tk.Tk):
         self.speed_var = tk.StringVar(value="50")
         ttk.Entry(param_line, textvariable=self.speed_var, width=8).pack(side="left", padx=(5, 15))
         
+        ttk.Label(param_line, text="Dokładność:").pack(side="left")
+        self.accuracy_var = tk.StringVar(value="Normalna")
+        accuracy_combo = ttk.Combobox(param_line, textvariable=self.accuracy_var, width=10, values=["Wysoka", "Normalna", "Niska"])
+        accuracy_combo.pack(side="left", padx=(5, 15))
+        accuracy_combo.bind("<<ComboboxSelected>>", self.on_accuracy_changed)
+        
         # ===== GŁÓWNY OBSZAR - WIZUALIZACJE =====
         main_frame = ttk.Frame(self)
         main_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -427,6 +485,28 @@ class LightPaintingSimulator(tk.Tk):
         else:
             self.log_message("⚠️ Używamy uproszczonej kinematyki (brak ikpy)")
     
+    def on_accuracy_changed(self, event=None):
+        """Obsługuje zmianę poziomu dokładności"""
+        global CONTOUR_APPROXIMATION_FACTOR, EDGE_POINT_STEP, MAX_POINTS_PER_PATH
+        
+        accuracy = self.accuracy_var.get()
+        
+        if accuracy == "Wysoka":
+            CONTOUR_APPROXIMATION_FACTOR = 0.02
+            EDGE_POINT_STEP = 1
+            MAX_POINTS_PER_PATH = 200
+            self.log_message("🔧 Ustawiono wysoką dokładność (więcej punktów, wolniej)")
+        elif accuracy == "Normalna":
+            CONTOUR_APPROXIMATION_FACTOR = 0.05
+            EDGE_POINT_STEP = 3
+            MAX_POINTS_PER_PATH = 100
+            self.log_message("🔧 Ustawiono normalną dokładność")
+        elif accuracy == "Niska":
+            CONTOUR_APPROXIMATION_FACTOR = 0.1
+            EDGE_POINT_STEP = 5
+            MAX_POINTS_PER_PATH = 50
+            self.log_message("🔧 Ustawiono niską dokładność (mniej punktów, szybciej)")
+    
     def setup_robot_visualization(self):
         """Konfiguruje wizualizację 3D robota (z ikpy_vis.py)"""
         # Tworzenie matplotlib figure dla robota
@@ -449,6 +529,9 @@ class LightPaintingSimulator(tk.Tk):
         
         # LED RGB jako punkt kolorowy
         self.led_point = self.robot_ax.scatter([], [], [], s=200, c='white', marker='*', label='LED RGB')
+        
+        # Light painting w 3D - zaczynamy z pustą kolekcją
+        self.light_painting_3d_scatter = self.robot_ax.scatter([], [], [], s=30, alpha=0.8, label='Light Painting 3D')
         
         self.robot_ax.legend(loc='upper right')
         self.robot_ax.set_title("Robot PUMA - Symulacja 3D")
@@ -593,6 +676,7 @@ class LightPaintingSimulator(tk.Tk):
         
         # Wyczyść poprzednie light painting
         self.light_painting_dots.clear()
+        self.light_painting_3d_dots.clear()
         if self.painting_ax is not None:
             self.painting_ax.clear()
             self.painting_ax.set_xlim(-2, 2)
@@ -663,14 +747,14 @@ class LightPaintingSimulator(tk.Tk):
     
     def add_light_painting_dot(self, point):
         """Dodaje kropkę light painting (symulacja długiego naświetlania)"""
-        # Pozycja w przestrzeni 2D (projekcja XY)
+        # Pozycja w przestrzeni 2D (projekcja XY) 
         pos = point["actual_pos"]
-        x, y = pos[0], pos[1]
+        x, y, z = pos[0], pos[1], pos[2]
         
         # Kolor LED
         color = point["rgb"]
         
-        # Dodaj kropkę jako mały okrąg (symulacja light painting)
+        # 1. Dodaj kropkę do widoku 2D (projekcja XY)
         circle = Circle((x, y), radius=0.02, color=color, alpha=0.8)
         if self.painting_ax is not None:
             self.painting_ax.add_patch(circle)
@@ -678,11 +762,25 @@ class LightPaintingSimulator(tk.Tk):
             # Dodaj też punkt dla lepszej widoczności
             self.painting_ax.scatter(x, y, s=20, c=[color], alpha=0.9)
         
-        # Zapisz do historii
+        # Zapisz do historii 2D
         self.light_painting_dots.append((x, y, color))
+        
+        # 2. Dodaj kropkę do widoku 3D
+        self.light_painting_3d_dots.append((x, y, z, color))
+        
+        # Aktualizuj scatter 3D z wszystkimi dotychczasowymi kropkami
+        if len(self.light_painting_3d_dots) > 0:
+            xs, ys, zs, colors = zip(*self.light_painting_3d_dots)
+            
+            # Usuń stary scatter i dodaj nowy z wszystkimi punktami
+            self.light_painting_3d_scatter.remove()
+            self.light_painting_3d_scatter = self.robot_ax.scatter(
+                xs, ys, zs, s=30, c=colors, alpha=0.8, label='Light Painting 3D'
+            )
         
         # Odśwież canvas
         self.painting_canvas.draw_idle()
+        self.robot_canvas.draw_idle()
     
     def stop_simulation(self):
         """Zatrzymuje symulację"""
@@ -694,7 +792,9 @@ class LightPaintingSimulator(tk.Tk):
     def finish_simulation(self):
         """Kończy symulację"""
         self.simulation_running = False
-        self.log_message(f"✅ Symulacja zakończona! Utworzono {len(self.light_painting_dots)} kropek light painting")
+        dots_2d = len(self.light_painting_dots)
+        dots_3d = len(self.light_painting_3d_dots)
+        self.log_message(f"✅ Symulacja zakończona! Utworzono {dots_2d} kropek 2D i {dots_3d} kropek 3D light painting")
         self.status_label.config(text="Symulacja zakończona", foreground="green")
     
     def clear_simulation(self):
@@ -703,6 +803,9 @@ class LightPaintingSimulator(tk.Tk):
         
         # Wyczyść light painting
         self.light_painting_dots.clear()
+        self.light_painting_3d_dots.clear()
+        
+        # Wyczyść 2D canvas
         if self.painting_ax is not None:
             self.painting_ax.clear()
             self.painting_ax.set_xlim(-2, 2)
@@ -712,6 +815,10 @@ class LightPaintingSimulator(tk.Tk):
             self.painting_ax.set_facecolor('black')
             self.painting_ax.set_title("Light Painting - Długie naświetlanie", color='white', fontsize=14)
         self.painting_canvas.draw()
+        
+        # Wyczyść 3D light painting
+        self.light_painting_3d_scatter.remove()
+        self.light_painting_3d_scatter = self.robot_ax.scatter([], [], [], s=30, alpha=0.8, label='Light Painting 3D')
         
         # Reset robota do pozycji home
         self.reset_robot_to_home()
