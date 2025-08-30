@@ -389,7 +389,7 @@ class ImageProcessor:
             self.edge_colors = [default_colors]
             return True, "Użyto prostego kształtu jako fallback"
     
-    def convert_to_robot_coordinates(self, scale_factor=0.01, offset_x=0, offset_y=0, offset_z=1.0):
+    def convert_to_robot_coordinates(self, scale_factor=0.01, offset_x=0, offset_y=0, offset_z=0.5):
         """Konwertuje piksele na współrzędne robota wraz z kolorami"""
         robot_paths = []
         robot_colors = []
@@ -399,10 +399,10 @@ class ImageProcessor:
             path_colors = self.edge_colors[path_idx] if path_idx < len(self.edge_colors) else []
             
             for point_idx, (x, y) in enumerate(path):
-                # Konwersja z odwróceniem Y (obraz vs współrzędne 3D)
-                robot_x = (x * scale_factor) + offset_x
-                robot_y = -(y * scale_factor) + offset_y  # Odwróć Y
-                robot_z = offset_z
+                # Konwersja na płaszczyznę pionową XZ (obraz rysowany pionowo przed robotem)
+                robot_x = (x * scale_factor) + offset_x  # X pozostaje bez zmian
+                robot_y = offset_y  # Y to stała odległość od robota (przed nim)
+                robot_z = -(y * scale_factor) + offset_z  # Y z obrazka staje się Z (odwrócone dla prawidłowej orientacji)
                 
                 robot_path.append([robot_x, robot_y, robot_z])
             
@@ -478,13 +478,27 @@ class LightPaintingSimulator(tk.Tk):
         self.offset_x_var = tk.StringVar(value="0.5")
         ttk.Entry(param_line, textvariable=self.offset_x_var, width=8).pack(side="left", padx=(5, 15))
         
-        ttk.Label(param_line, text="Offset Y:").pack(side="left")
-        self.offset_y_var = tk.StringVar(value="0.5")
+        ttk.Label(param_line, text="Offset Y (odległość):").pack(side="left")
+        self.offset_y_var = tk.StringVar(value="1.5")
         ttk.Entry(param_line, textvariable=self.offset_y_var, width=8).pack(side="left", padx=(5, 15))
         
-        ttk.Label(param_line, text="Wysokość Z:").pack(side="left")
-        self.offset_z_var = tk.StringVar(value="1.5")
+        ttk.Label(param_line, text="Wysokość Z (centrum):").pack(side="left")
+        self.offset_z_var = tk.StringVar(value="2.0")
         ttk.Entry(param_line, textvariable=self.offset_z_var, width=8).pack(side="left", padx=(5, 15))
+        
+        # Szybkie ustawienia pozycji
+        quick_pos_frame = ttk.Frame(param_line)
+        quick_pos_frame.pack(side="left", padx=(10, 15))
+        ttk.Label(quick_pos_frame, text="Szybkie pozycje:").pack(side="top")
+        quick_buttons_frame = ttk.Frame(quick_pos_frame)
+        quick_buttons_frame.pack(side="top")
+        
+        ttk.Button(quick_buttons_frame, text="Blisko", width=6, 
+                  command=lambda: self.set_quick_position(0.2)).pack(side="left", padx=1)
+        ttk.Button(quick_buttons_frame, text="Średnio", width=6,
+                  command=lambda: self.set_quick_position(0.5)).pack(side="left", padx=1)
+        ttk.Button(quick_buttons_frame, text="Daleko", width=6,
+                  command=lambda: self.set_quick_position(1.0)).pack(side="left", padx=1)
         
         ttk.Label(param_line, text="Prędkość:").pack(side="left")
         self.speed_var = tk.StringVar(value="50")
@@ -552,6 +566,13 @@ class LightPaintingSimulator(tk.Tk):
             MAX_POINTS_PER_PATH = 50
             self.log_message("🔧 Ustawiono niską dokładność (mniej punktów, szybciej)")
     
+    def set_quick_position(self, z_value):
+        """Szybkie ustawienie pozycji Z"""
+        self.offset_z_var.set(str(z_value))
+        position_names = {0.2: "blisko", 0.5: "średnio", 1.0: "daleko"}
+        name = position_names.get(z_value, "niestandardowo")
+        self.log_message(f"📍 Ustawiono pozycję {name} przed robotem (Z = {z_value})")
+    
     def setup_robot_visualization(self):
         """Konfiguruje wizualizację 3D robota (z ikpy_vis.py)"""
         # Tworzenie matplotlib figure dla robota
@@ -565,7 +586,7 @@ class LightPaintingSimulator(tk.Tk):
         self.robot_ax.set_xlabel('X [m]')
         self.robot_ax.set_ylabel('Y [m]')
         self.robot_ax.set_zlabel('Z [m]')
-        self.robot_ax.view_init(elev=25, azim=45)
+        self.robot_ax.view_init(elev=10, azim=0)  # Widok z przodu dla pionowej płaszczyzny XZ
         
         # Elementy wizualizacji robota
         self.robot_links, = self.robot_ax.plot([], [], [], 'b-', linewidth=4, label='Robot links')
@@ -594,11 +615,13 @@ class LightPaintingSimulator(tk.Tk):
         
         # Sprawdź czy painting_ax został utworzony
         if self.painting_ax is not None:
-            self.painting_ax.set_xlim(-2, 2)
-            self.painting_ax.set_ylim(-2, 2)
+            self.painting_ax.set_xlim(-2, 2)  # X pozostaje bez zmian
+            self.painting_ax.set_ylim(0, 4)   # Y to teraz Z (wysokość), zakres 0-4
             self.painting_ax.set_aspect('equal')
             self.painting_ax.axis('off')  # Bez osi - jak prawdziwe light painting
-            self.painting_ax.set_title("Light Painting - Długie naświetlanie", color='white', fontsize=14)
+            self.painting_ax.set_title("Light Painting - Płaszczyzna pionowa (XZ)", color='white', fontsize=14)
+            self.painting_ax.set_xlabel("X", color='white')
+            self.painting_ax.set_ylabel("Z (wysokość)", color='white')
         
         # Embed w tkinter
         self.painting_canvas = FigureCanvasTkAgg(self.painting_fig, self.painting_container)
@@ -735,11 +758,11 @@ class LightPaintingSimulator(tk.Tk):
         if self.painting_ax is not None:
             self.painting_ax.clear()
             self.painting_ax.set_xlim(-2, 2)
-            self.painting_ax.set_ylim(-2, 2)
+            self.painting_ax.set_ylim(0, 4)
             self.painting_ax.set_aspect('equal')
             self.painting_ax.axis('off')
             self.painting_ax.set_facecolor('black')
-            self.painting_ax.set_title("Light Painting - Długie naświetlanie", color='white', fontsize=14)
+            self.painting_ax.set_title("Light Painting - Płaszczyzna pionowa (XZ)", color='white', fontsize=14)
         
         self.simulation_running = True
         self.current_point_index = 0
@@ -802,7 +825,7 @@ class LightPaintingSimulator(tk.Tk):
     
     def add_light_painting_dot(self, point):
         """Dodaje kropkę light painting (symulacja długiego naświetlania) i łączy liniami"""
-        # Pozycja w przestrzeni 2D (projekcja XY) 
+        # Pozycja w przestrzeni 3D
         pos = point["actual_pos"]
         x, y, z = pos[0], pos[1], pos[2]
         
@@ -813,25 +836,25 @@ class LightPaintingSimulator(tk.Tk):
         path_idx = point.get("path_idx", 0)
         point_idx = point.get("point_idx", 0)
         
-        # 1. Dodaj kropkę do widoku 2D (projekcja XY)
-        circle = Circle((x, y), radius=0.02, color=color, alpha=0.8)
+        # 1. Dodaj kropkę do widoku 2D (projekcja XZ - płaszczyzna pionowa)
+        circle = Circle((x, z), radius=0.02, color=color, alpha=0.8)  # Używamy X i Z
         if self.painting_ax is not None:
             self.painting_ax.add_patch(circle)
             
             # Dodaj też punkt dla lepszej widoczności
-            self.painting_ax.scatter(x, y, s=20, c=[color], alpha=0.9)
+            self.painting_ax.scatter(x, z, s=20, c=[color], alpha=0.9)  # X i Z
         
-        # Zapisz do historii 2D
-        self.light_painting_dots.append((x, y, color, path_idx, point_idx))
+        # Zapisz do historii 2D (teraz XZ)
+        self.light_painting_dots.append((x, z, color, path_idx, point_idx))  # X i Z
         
         # 2. Rysuj linię do poprzedniego punktu tej samej ścieżki
         # Znajdź poprzedni punkt z tej samej ścieżki
         prev_point_2d = None
         prev_point_3d = None
         
-        for prev_x, prev_y, prev_color, prev_path_idx, prev_point_idx in reversed(self.light_painting_dots[:-1]):
+        for prev_x, prev_z, prev_color, prev_path_idx, prev_point_idx in reversed(self.light_painting_dots[:-1]):
             if prev_path_idx == path_idx and prev_point_idx == point_idx - 1:
-                prev_point_2d = (prev_x, prev_y, prev_color)
+                prev_point_2d = (prev_x, prev_z, prev_color)
                 break
         
         for prev_x3d, prev_y3d, prev_z3d, prev_color3d, prev_path_idx3d, prev_point_idx3d in reversed(self.light_painting_3d_dots):
@@ -841,11 +864,11 @@ class LightPaintingSimulator(tk.Tk):
         
         # Dodaj linię 2D jeśli znaleziono poprzedni punkt
         if prev_point_2d and self.painting_ax is not None:
-            prev_x, prev_y, prev_color = prev_point_2d
+            prev_x, prev_z, prev_color = prev_point_2d
             # Użyj średniego koloru dla linii
             avg_color = [(color[i] + prev_color[i]) / 2 for i in range(3)]
-            self.painting_ax.plot([prev_x, x], [prev_y, y], color=avg_color, linewidth=2, alpha=0.7)
-            self.light_painting_lines_2d.append(((prev_x, prev_y), (x, y), avg_color))
+            self.painting_ax.plot([prev_x, x], [prev_z, z], color=avg_color, linewidth=2, alpha=0.7)
+            self.light_painting_lines_2d.append(((prev_x, prev_z), (x, z), avg_color))
         
         # 3. Dodaj kropkę do widoku 3D
         self.light_painting_3d_dots.append((x, y, z, color, path_idx, point_idx))
@@ -911,11 +934,11 @@ class LightPaintingSimulator(tk.Tk):
         if self.painting_ax is not None:
             self.painting_ax.clear()
             self.painting_ax.set_xlim(-2, 2)
-            self.painting_ax.set_ylim(-2, 2)
+            self.painting_ax.set_ylim(0, 4)
             self.painting_ax.set_aspect('equal')
             self.painting_ax.axis('off')
             self.painting_ax.set_facecolor('black')
-            self.painting_ax.set_title("Light Painting - Długie naświetlanie", color='white', fontsize=14)
+            self.painting_ax.set_title("Light Painting - Płaszczyzna pionowa (XZ)", color='white', fontsize=14)
         self.painting_canvas.draw()
         
         # Wyczyść 3D light painting
