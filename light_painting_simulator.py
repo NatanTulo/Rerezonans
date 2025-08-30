@@ -147,6 +147,7 @@ class ImageProcessor:
         self.current_image = None
         self.contours = []
         self.edge_paths = []
+        self.edge_colors = []  # Kolory dla każdej ścieżki krawędzi
         
     def load_image(self, image_path):
         """Wczytuje obraz"""
@@ -240,6 +241,8 @@ class ImageProcessor:
             
             # Uprość kontury i ogranicz liczbę punktów
             simplified_edge_paths = []
+            simplified_edge_colors = []
+            
             for cnt in conts:
                 # Uprość kontur
                 simplified = cv.approxPolyDP(cnt, CONTOUR_APPROXIMATION_FACTOR * cv.arcLength(cnt, True), True)
@@ -255,8 +258,23 @@ class ImageProcessor:
                 
                 if len(points) > 2:  # Tylko jeśli ma sens
                     simplified_edge_paths.append(points)
+                    
+                    # Pobierz kolory z oryginalnego obrazka dla każdego punktu
+                    path_colors = []
+                    for x, y in points:
+                        # Upewnij się, że współrzędne są w granicach obrazka
+                        x = max(0, min(x, self.current_image.shape[1] - 1))
+                        y = max(0, min(y, self.current_image.shape[0] - 1))
+                        
+                        # Pobierz kolor BGR z obrazka i zamień na RGB (0-1)
+                        bgr_color = self.current_image[y, x]
+                        rgb_color = (bgr_color[2] / 255.0, bgr_color[1] / 255.0, bgr_color[0] / 255.0)
+                        path_colors.append(rgb_color)
+                    
+                    simplified_edge_colors.append(path_colors)
             
             self.edge_paths = simplified_edge_paths
+            self.edge_colors = simplified_edge_colors
             
             return True, f"Wykryto {len(self.edge_paths)} ścieżek krawędzi"
             
@@ -319,6 +337,8 @@ class ImageProcessor:
             
             # Uprość kontury i ogranicz liczbę punktów (jak wyżej)
             simplified_edge_paths = []
+            simplified_edge_colors = []
+            
             for cnt in conts:
                 # Uprość kontur
                 simplified = cv.approxPolyDP(cnt, CONTOUR_APPROXIMATION_FACTOR * cv.arcLength(cnt, True), True)
@@ -334,8 +354,23 @@ class ImageProcessor:
                 
                 if len(points) > 2:  # Tylko jeśli ma sens
                     simplified_edge_paths.append(points)
+                    
+                    # Pobierz kolory z oryginalnego obrazka dla każdego punktu
+                    path_colors = []
+                    for x, y in points:
+                        # Upewnij się, że współrzędne są w granicach obrazka
+                        x = max(0, min(x, self.current_image.shape[1] - 1))
+                        y = max(0, min(y, self.current_image.shape[0] - 1))
+                        
+                        # Pobierz kolor BGR z obrazka i zamień na RGB (0-1)
+                        bgr_color = self.current_image[y, x]
+                        rgb_color = (bgr_color[2] / 255.0, bgr_color[1] / 255.0, bgr_color[0] / 255.0)
+                        path_colors.append(rgb_color)
+                    
+                    simplified_edge_colors.append(path_colors)
             
             self.edge_paths = simplified_edge_paths
+            self.edge_colors = simplified_edge_colors
             
             print(f"Automatycznie wykryto {len(self.edge_paths)} ścieżek krawędzi")
             return True, f"Automatycznie wykryto {len(self.edge_paths)} ścieżek"
@@ -349,15 +384,21 @@ class ImageProcessor:
                 (3*w//4, 3*h//4), (w//4, 3*h//4), (w//4, h//4)
             ]
             self.edge_paths = [square_points]
+            # Domyślne kolory dla fallback
+            default_colors = [(1.0, 1.0, 1.0)] * len(square_points)  # Białe kropki
+            self.edge_colors = [default_colors]
             return True, "Użyto prostego kształtu jako fallback"
     
     def convert_to_robot_coordinates(self, scale_factor=0.01, offset_x=0, offset_y=0, offset_z=1.0):
-        """Konwertuje piksele na współrzędne robota"""
+        """Konwertuje piksele na współrzędne robota wraz z kolorami"""
         robot_paths = []
+        robot_colors = []
         
-        for path in self.edge_paths:
+        for path_idx, path in enumerate(self.edge_paths):
             robot_path = []
-            for x, y in path:
+            path_colors = self.edge_colors[path_idx] if path_idx < len(self.edge_colors) else []
+            
+            for point_idx, (x, y) in enumerate(path):
                 # Konwersja z odwróceniem Y (obraz vs współrzędne 3D)
                 robot_x = (x * scale_factor) + offset_x
                 robot_y = -(y * scale_factor) + offset_y  # Odwróć Y
@@ -366,8 +407,9 @@ class ImageProcessor:
                 robot_path.append([robot_x, robot_y, robot_z])
             
             robot_paths.append(robot_path)
+            robot_colors.append(path_colors)
         
-        return robot_paths
+        return robot_paths, robot_colors
 
 class LightPaintingSimulator(tk.Tk):
     """Główna aplikacja symulatora light painting"""
@@ -383,9 +425,12 @@ class LightPaintingSimulator(tk.Tk):
         
         # Stan symulacji
         self.robot_paths = []
+        self.robot_colors = []  # Kolory dla każdej ścieżki
         self.trajectory_points = []
         self.light_painting_dots = []  # Kropki light painting (2D)
         self.light_painting_3d_dots = []  # Kropki light painting (3D)
+        self.light_painting_lines_2d = []  # Linie light painting (2D)
+        self.light_painting_lines_3d = []  # Linie light painting (3D)
         self.simulation_running = False
         self.animation = None
         
@@ -613,7 +658,7 @@ class LightPaintingSimulator(tk.Tk):
             offset_y = float(self.offset_y_var.get())
             offset_z = float(self.offset_z_var.get())
             
-            self.robot_paths = self.image_processor.convert_to_robot_coordinates(
+            self.robot_paths, self.robot_colors = self.image_processor.convert_to_robot_coordinates(
                 scale, offset_x, offset_y, offset_z
             )
             
@@ -634,21 +679,29 @@ class LightPaintingSimulator(tk.Tk):
         self.log_message("🗺️ Generowanie trajektorii z kinematyką odwrotną...")
         
         for path_idx, robot_path in enumerate(self.robot_paths):
+            path_colors = self.robot_colors[path_idx] if path_idx < len(self.robot_colors) else []
+            
             for point_idx, position in enumerate(robot_path):
                 angles, actual_pos, error = self.kinematics.calculate_inverse_kinematics(position)
                 
                 if angles is not None and error < 0.1:  # Akceptuj tylko małe błędy
-                    # Generuj kolor na podstawie pozycji w ścieżce
-                    progress = point_idx / max(1, len(robot_path) - 1)
-                    hue = (path_idx * 0.3 + progress * 0.7) % 1.0  # Różne kolory dla ścieżek
-                    r, g, b = colorsys.hsv_to_rgb(hue, 0.8, 1.0)
+                    # Użyj koloru z obrazka jeśli dostępny, inaczej generuj kolor
+                    if point_idx < len(path_colors):
+                        color = path_colors[point_idx]
+                    else:
+                        # Fallback - generuj kolor na podstawie pozycji w ścieżce
+                        progress = point_idx / max(1, len(robot_path) - 1)
+                        hue = (path_idx * 0.3 + progress * 0.7) % 1.0  # Różne kolory dla ścieżek
+                        color = colorsys.hsv_to_rgb(hue, 0.8, 1.0)
                     
                     trajectory_point = {
                         "position": position,
                         "angles": angles,
                         "actual_pos": actual_pos,
-                        "rgb": (r, g, b),
-                        "error": error
+                        "rgb": color,
+                        "error": error,
+                        "path_idx": path_idx,
+                        "point_idx": point_idx
                     }
                     
                     self.trajectory_points.append(trajectory_point)
@@ -677,6 +730,8 @@ class LightPaintingSimulator(tk.Tk):
         # Wyczyść poprzednie light painting
         self.light_painting_dots.clear()
         self.light_painting_3d_dots.clear()
+        self.light_painting_lines_2d.clear()
+        self.light_painting_lines_3d.clear()
         if self.painting_ax is not None:
             self.painting_ax.clear()
             self.painting_ax.set_xlim(-2, 2)
@@ -746,13 +801,17 @@ class LightPaintingSimulator(tk.Tk):
         self.robot_canvas.draw_idle()
     
     def add_light_painting_dot(self, point):
-        """Dodaje kropkę light painting (symulacja długiego naświetlania)"""
+        """Dodaje kropkę light painting (symulacja długiego naświetlania) i łączy liniami"""
         # Pozycja w przestrzeni 2D (projekcja XY) 
         pos = point["actual_pos"]
         x, y, z = pos[0], pos[1], pos[2]
         
         # Kolor LED
         color = point["rgb"]
+        
+        # Informacje o ścieżce
+        path_idx = point.get("path_idx", 0)
+        point_idx = point.get("point_idx", 0)
         
         # 1. Dodaj kropkę do widoku 2D (projekcja XY)
         circle = Circle((x, y), radius=0.02, color=color, alpha=0.8)
@@ -763,14 +822,53 @@ class LightPaintingSimulator(tk.Tk):
             self.painting_ax.scatter(x, y, s=20, c=[color], alpha=0.9)
         
         # Zapisz do historii 2D
-        self.light_painting_dots.append((x, y, color))
+        self.light_painting_dots.append((x, y, color, path_idx, point_idx))
         
-        # 2. Dodaj kropkę do widoku 3D
-        self.light_painting_3d_dots.append((x, y, z, color))
+        # 2. Rysuj linię do poprzedniego punktu tej samej ścieżki
+        # Znajdź poprzedni punkt z tej samej ścieżki
+        prev_point_2d = None
+        prev_point_3d = None
+        
+        for prev_x, prev_y, prev_color, prev_path_idx, prev_point_idx in reversed(self.light_painting_dots[:-1]):
+            if prev_path_idx == path_idx and prev_point_idx == point_idx - 1:
+                prev_point_2d = (prev_x, prev_y, prev_color)
+                break
+        
+        for prev_x3d, prev_y3d, prev_z3d, prev_color3d, prev_path_idx3d, prev_point_idx3d in reversed(self.light_painting_3d_dots):
+            if prev_path_idx3d == path_idx and prev_point_idx3d == point_idx - 1:
+                prev_point_3d = (prev_x3d, prev_y3d, prev_z3d, prev_color3d)
+                break
+        
+        # Dodaj linię 2D jeśli znaleziono poprzedni punkt
+        if prev_point_2d and self.painting_ax is not None:
+            prev_x, prev_y, prev_color = prev_point_2d
+            # Użyj średniego koloru dla linii
+            avg_color = [(color[i] + prev_color[i]) / 2 for i in range(3)]
+            self.painting_ax.plot([prev_x, x], [prev_y, y], color=avg_color, linewidth=2, alpha=0.7)
+            self.light_painting_lines_2d.append(((prev_x, prev_y), (x, y), avg_color))
+        
+        # 3. Dodaj kropkę do widoku 3D
+        self.light_painting_3d_dots.append((x, y, z, color, path_idx, point_idx))
+        
+        # Dodaj linię 3D jeśli znaleziono poprzedni punkt
+        if prev_point_3d:
+            prev_x3d, prev_y3d, prev_z3d, prev_color3d = prev_point_3d
+            # Użyj średniego koloru dla linii
+            avg_color_3d = [(color[i] + prev_color3d[i]) / 2 for i in range(3)]
+            
+            # Dodaj linię do widoku 3D
+            self.robot_ax.plot([prev_x3d, x], [prev_y3d, y], [prev_z3d, z], 
+                              color=avg_color_3d, linewidth=2, alpha=0.7)
+            self.light_painting_lines_3d.append(((prev_x3d, prev_y3d, prev_z3d), (x, y, z), avg_color_3d))
         
         # Aktualizuj scatter 3D z wszystkimi dotychczasowymi kropkami
         if len(self.light_painting_3d_dots) > 0:
-            xs, ys, zs, colors = zip(*self.light_painting_3d_dots)
+            xs, ys, zs, colors = [], [], [], []
+            for x3d, y3d, z3d, color3d, _, _ in self.light_painting_3d_dots:
+                xs.append(x3d)
+                ys.append(y3d)
+                zs.append(z3d)
+                colors.append(color3d)
             
             # Usuń stary scatter i dodaj nowy z wszystkimi punktami
             self.light_painting_3d_scatter.remove()
@@ -794,7 +892,9 @@ class LightPaintingSimulator(tk.Tk):
         self.simulation_running = False
         dots_2d = len(self.light_painting_dots)
         dots_3d = len(self.light_painting_3d_dots)
-        self.log_message(f"✅ Symulacja zakończona! Utworzono {dots_2d} kropek 2D i {dots_3d} kropek 3D light painting")
+        lines_2d = len(self.light_painting_lines_2d)
+        lines_3d = len(self.light_painting_lines_3d)
+        self.log_message(f"✅ Symulacja zakończona! Utworzono {dots_2d} kropek 2D, {dots_3d} kropek 3D, {lines_2d} linii 2D i {lines_3d} linii 3D")
         self.status_label.config(text="Symulacja zakończona", foreground="green")
     
     def clear_simulation(self):
@@ -804,6 +904,8 @@ class LightPaintingSimulator(tk.Tk):
         # Wyczyść light painting
         self.light_painting_dots.clear()
         self.light_painting_3d_dots.clear()
+        self.light_painting_lines_2d.clear()
+        self.light_painting_lines_3d.clear()
         
         # Wyczyść 2D canvas
         if self.painting_ax is not None:
