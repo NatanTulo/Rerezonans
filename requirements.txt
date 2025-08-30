@@ -1,14 +1,44 @@
-# WebSocket dependencies for ESP32 testing
-websockets>=10.0
+# Projekt: Light Painting Robot - PUMA arm controller
+# Zespół hackaton: Rerezonans
+# Data aktualizacji: 2025-08-31
+#
+# INSTALACJA:
+# 1. Utwórz środowisko wirtualne: python3 -m venv venv
+# 2. Aktywuj środowisko: source venv/bin/activate (Linux/Mac) lub venv\Scripts\activate (Windows)
+# 3. Zainstaluj zależności: pip install -r requirements.txt
+# 4. Uruchom główną aplikację: python integrated_app.py
+# 5. Lub symulator: python light_painting_simulator.py
 
-# Computer vision and numerical libraries
-opencv-python>=4.7.0
-numpy>=1.24.0
-matplotlib>=3.8.0
+# ===== PODSTAWOWE BIBLIOTEKI =====
+# Numerical computing - wersja kompatybilna z opencv-python
+numpy>=2.0.0,<2.3.0
+scipy>=1.16.0
 
-# GUI backends for OpenCV and matplotlib
-PySide6>=6.6.0
-PyQt5>=5.15.0
+# Computer vision
+opencv-python>=4.12.0
 
-# Serial communication for ESP testing
+# Scientific plotting and visualization
+matplotlib>=3.10.0
+
+# ===== ROBOTYKA I KINEMATYKA =====
+# Inverse kinematics for robot simulation
+ikpy>=3.4.0
+
+# ===== KOMUNIKACJA =====
+# WebSocket communication with ESP32
+websockets>=15.0.0
+
+# Serial communication (for ESP testing)
 pyserial>=3.5
+
+# ===== GUI FRAMEWORKS =====
+# Qt backends for matplotlib (dla interaktywnych wykresów)
+PyQt5>=5.15.11
+PySide6>=6.9.2
+
+# ===== DODATKOWE ZALEŻNOŚCI =====
+# Image processing support
+Pillow>=11.3.0
+
+# Math libraries used by ikpy and robotics calculations
+sympy>=1.14.0

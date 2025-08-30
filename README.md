@@ -1,54 +1,119 @@
-# ESP32 RoboArm - WebSocket Version
+# 🎨 Light Painting Robot - PUMA Arm Project
 
-Projekt ramienia robotycznego ESP32 z obsługą WiFi hotspot i WebSocket.
+**Zespół hackaton: Rerezonans** | **Data: 2025-08-31**
 
-## Funkcje
+Projekt ramienia robotycznego PUMA z funkcją light painting - tworzenia obrazów światłem w długim naświetlaniu. System składa się z ESP32 jako kontrolera sprzętowego oraz zaawansowanych aplikacji Python do planowania ruchu i symulacji.
 
-- **ESP32 jako hotspot WiFi** - sieć `ESP32_RoboArm` (hasło: `roboarm123`)
-- **Serwer WebSocket** na porcie 81
-- **Kontrola 5 serwosilników** przez PCA9685 (I2C)
-- **Dioda PWM** przez pin 16 (poprzednia dioda, nadal używana)
-- **Dioda RGB adresowalna** (NeoPixel) na pin 17
-- **Komunikacja JSON** przez WebSocket
+## 🚀 Funkcje systemu
 
-## Hardware
+### 🤖 **Główne aplikacje Python**
+- **Light Painting Simulator** - Autonomiczny symulator z wizualizacją 3D
+- **Integrated App** - Pełna aplikacja z komunikacją ESP32 + symulacja
+- **Kinematyka odwrotna** - PUMA robot z biblioteką ikpy
+- **Interaktywne rysowanie** - OpenCV do tworzenia konturów
+- **Wizualizacja 3D** - Matplotlib do animacji robota
 
-### Podłączenia:
-- **I2C (PCA9685)**: SDA=21, SCL=22
-- **Dioda PWM**: Pin 16 (sterowana przez LEDC)
-- **Dioda RGB**: Pin 17 (NeoPixel WS2812)
-- **Serwa**: Kanały 0-4 na PCA9685
+### ⚡ **ESP32 Hardware Controller**
+- WiFi hotspot: `ESP32_RoboArm` (hasło: `roboarm123`)
+- WebSocket serwer na porcie 81
+- Kontrola 5 serwosilników (PUMA kinematics)
+- Dioda RGB adresowalna (NeoPixel) dla light painting
+- Komunikacja JSON przez WebSocket
 
-### Serwa:
-- Kanały 0-2: MG996R (większe serwa)
-- Kanały 3-4: MG90S (mniejsze serwa)
-- Zakres: -90° do +90°
-- Częstotliwość PWM: 50Hz
+## 📁 Struktura projektu
 
-## Programowanie ESP32
+```
+├── light_painting_simulator.py  # 🎨 SYMULATOR - działa bez ESP32
+├── integrated_app.py           # 🔧 GŁÓWNA APLIKACJA z ESP32
+├── requirements.txt            # 📦 Wszystkie zależności Python
+├── roboarm/                    # 🔌 Kod ESP32 (PlatformIO)
+│   ├── platformio.ini
+│   └── src/main.cpp
+├── test-esp/                   # 🧪 Narzędzia testowe
+│   ├── gui_proto.py           # WebSocket test client
+│   └── testyWS/               # Zaawansowane testy
+└── archive/                    # 📚 Oryginalne pliki zespołu
+    ├── ikpy_vis.py            # Wizualizacja 3D
+    ├── kontury.py             # Interaktywne rysowanie
+    └── calcDegrees.py         # Kinematyka robota
+```
 
+## 🔧 Instalacja i uruchomienie
+
+### **Krok 1: Przygotowanie środowiska Python**
+```bash
+# Klonowanie repozytorium
+git clone https://github.com/NatanTulo/Rerezonans.git
+cd Rerezonans
+
+# Utworzenie środowiska wirtualnego
+python3 -m venv venv
+source venv/bin/activate  # Linux/Mac
+# lub: venv\Scripts\activate  # Windows
+
+# Instalacja zależności
+pip install -r requirements.txt
+```
+
+### **Krok 2A: Uruchomienie symulatora (bez ESP32)**
+```bash
+python light_painting_simulator.py
+```
+**Funkcje symulatora:**
+- ✅ Pełna wizualizacja 3D robota PUMA
+- ✅ Interaktywne rysowanie konturów
+- ✅ Symulacja light painting
+- ✅ Kinematyka odwrotna z ikpy
+- ✅ Działa autonomicznie
+
+### **Krok 2B: Uruchomienie głównej aplikacji (z ESP32)**
+```bash
+python integrated_app.py
+```
+**Wymagania:**
+- ESP32 zaprogramowany (instrukcje poniżej)
+- Połączenie WiFi z ESP32_RoboArm
+
+## 🤖 Programowanie ESP32
+
+### **Instalacja PlatformIO**
+```bash
+# Instalacja PlatformIO CLI
+curl -fsSL https://raw.githubusercontent.com/platformio/platformio-core-installer/master/get-platformio.py -o get-platformio.py
+python3 get-platformio.py
+
+# Lub przez VSCode extension: PlatformIO IDE
+```
+
+### **Wgranie firmware**
 ```bash
 cd roboarm
 ~/.platformio/penv/bin/platformio run --target upload
 ```
 
-## Komunikacja
+### **Hardware - podłączenia:**
+- **I2C (PCA9685)**: SDA=21, SCL=22
+- **LED RGB**: Pin 17 (NeoPixel WS2812)
+- **Serwa PUMA**: Kanały 0-4 na PCA9685
+  - Kanały 0-2: MG996R (większe serwa)
+  - Kanały 3-4: MG90S (mniejsze serwa)
 
-### Połączenie WiFi
-1. Połącz się z siecią WiFi: `ESP32_RoboArm`
-2. Hasło: `roboarm123`
-3. IP ESP32: `192.168.4.1`
-4. WebSocket: `ws://192.168.4.1:81`
+## 📡 Komunikacja ESP32 - Protokoły WebSocket
 
-### Polecenia JSON
+### **Połączenie z ESP32**
+1. Połącz się z WiFi: `ESP32_RoboArm`, hasło: `roboarm123`
+2. IP ESP32: `192.168.4.1`
+3. WebSocket: `ws://192.168.4.1:81`
 
-#### Ping
+### **Protokół komunikacji JSON**
+
+#### ✅ **Ping** (test połączenia)
 ```json
 {"cmd": "ping"}
 ```
-Odpowiedź: `{"pong": true}`
+**Odpowiedź:** `{"pong": true}`
 
-#### Home position
+#### 🏠 **Home position** (pozycja wyjściowa)
 ```json
 {
   "cmd": "home",
@@ -58,19 +123,7 @@ Odpowiedź: `{"pong": true}`
 }
 ```
 
-#### Kontrola LED PWM
-```json
-{"cmd": "led", "val": 128}
-```
-- `val`: 0-255
-
-#### Kontrola LED RGB
-```json
-{"cmd": "rgb", "r": 255, "g": 0, "b": 0}
-```
-- `r`, `g`, `b`: 0-255
-
-#### Ruch serw
+#### 🤖 **Ruch serw** (główne polecenie ruchu)
 ```json
 {
   "cmd": "frame",
@@ -80,68 +133,93 @@ Odpowiedź: `{"pong": true}`
   "rgb": {"r": 0, "g": 0, "b": 255}
 }
 ```
-- `deg`: tablica kątów [-90, 90] dla każdego serwa
+- `deg`: kąty [-90°, 90°] dla 5 serw PUMA
 - `ms`: czas ruchu w milisekundach
-- `led`: jasność LED PWM (opcjonalne)
-- `rgb`: kolor LED RGB (opcjonalne)
+- `rgb`: kolor LED podczas ruchu
 
-#### Status
+#### 💡 **Kontrola LED RGB**
+```json
+{"cmd": "rgb", "r": 255, "g": 0, "b": 0}
+```
+
+#### 📊 **Status robota**
 ```json
 {"cmd": "status"}
 ```
-Odpowiedź zawiera aktualny stan wszystkich serw i LED.
+**Odpowiedź:** aktualny stan serw i LED
 
-#### Konfiguracja serw
-```json
-{
-  "cmd": "config",
-  "ch": 0,
-  "min_us": 1000,
-  "max_us": 2000,
-  "offset_us": 0,
-  "invert": false
-}
-```
-
-## Test Client
-
-### Instalacja
+### **Test komunikacji**
 ```bash
 cd test-esp
-python3 -m venv venv
-source venv/bin/activate
-pip install websockets
-```
-
-### Uruchomienie
-```bash
-# Test bez połączenia
-python test_proto.py --dry
-
-# Połączenie z ESP32
+python gui_proto.py  # GUI test client
+# lub
 python test_proto.py --host 192.168.4.1 --port 81
 ```
 
-### Przykładowe polecenia w kliencie:
-- Ping
-- Home position z zielonym LED RGB
-- Kontrola LED PWM i RGB
-- Ruch serw z interpolacją kolorów
-- Zapytanie o status
+## 🎨 Jak używać systemu Light Painting
 
-## Protokół WebSocket
+### **1. Symulator (bez sprzętu)**
+1. Uruchom `python light_painting_simulator.py`
+2. Kliknij "📁 Wczytaj obraz"
+3. Kliknij "✏️ Rysuj kontury" - narysuj interaktywnie lub użyj auto-detect
+4. Kliknij "🚀 Start Light Painting"
+5. Obserwuj symulację 3D + light painting canvas
 
-1. **Połączenie**: Klient łączy się z `ws://192.168.4.1:81`
-2. **Powitanie**: ESP32 wysyła JSON z informacjami o gotowości
-3. **Polecenia**: Klient wysyła JSON, ESP32 odpowiada
-4. **Status**: ESP32 wysyła okresowo status (co sekundę) jeśli są połączeni klienci
+### **2. Pełny system (z ESP32)**
+1. Zaprogramuj ESP32 i podłącz serwa
+2. Uruchom `python integrated_app.py`
+3. Zakładka "WebSocket": połącz z ESP32
+4. Zakładka "Light Painting": wczytaj obraz i rysuj kontury  
+5. Zakładka "Robot Control": uruchom sekwencję light painting
 
-## Zmiany względem wersji Serial
+## 🔬 Zaawansowane funkcje
 
-- ✅ WiFi hotspot zamiast Serial
-- ✅ WebSocket zamiast Serial JSON
-- ✅ Dodano LED RGB adresowalne (NeoPixel)
-- ✅ Zachowano LED PWM na pin 16
-- ✅ Nowe polecenia: `rgb`, rozszerzone `home` i `frame`
-- ✅ Okresowe wysyłanie statusu
-- ✅ Interpolacja RGB podczas ruchu
+### **Testowanie komunikacji WebSocket**
+```bash
+cd test-esp/testyWS
+python quick_test_all_modes.py      # Szybki test wszystkich funkcji
+python advanced_control_test.py     # Zaawansowana kontrola
+python latency_test.py              # Test opóźnień
+python realtime_control_test.py     # Kontrola w czasie rzeczywistym
+```
+
+### **Konfiguracja kinematyki**
+W `light_painting_simulator.py` i `integrated_app.py` można dostroić:
+- Parametry DH robota PUMA
+- Skalę konwersji obraz → współrzędne robota
+- Prędkość ruchu i interpolację kolorów
+
+## 👥 Zespół i architektura
+
+**Projekt bazuje na pracy zespołu hackathonu:**
+- `ikpy_vis.py` → Wizualizacja 3D robota (w `light_painting_simulator.py`)
+- `kontury.py` → Interaktywne rysowanie konturów  
+- `calcDegrees.py` → Kinematyka odwrotna PUMA
+
+**Nowa architektura:**
+- **Symulator** - wszystko w jednym, bez ESP32
+- **Integrated App** - łączy symulację z rzeczywistym ESP32
+- **Modularna struktura** - każda funkcja w osobnych klasach
+
+## 📚 Dokumentacja techniczna
+
+- **SIMULATOR_DOCS.md** - Szczegółowa dokumentacja symulatora
+- **ZAAWANSOWANE_TRYBY.md** - Tryby zaawansowane i konfiguracja
+- **PERFORMANCE_ANALYSIS.md** - Analiza wydajności systemu
+
+## 🚨 Rozwiązywanie problemów
+
+### **Błąd OpenCV GUI**
+Symulator ma automatyczny fallback - jeśli interaktywne rysowanie nie działa, używa automatycznego wykrywania konturów.
+
+### **Błąd połączenia ESP32**
+1. Sprawdź połączenie WiFi z `ESP32_RoboArm`
+2. Zweryfikuj IP: `192.168.4.1`
+3. Użyj test clienta: `python test-esp/gui_proto.py`
+
+### **Błąd ikpy**
+Aplikacje działają również bez ikpy (uproszczona kinematyka). Zalecana instalacja: `pip install ikpy`
+
+---
+
+**🎉 Gotowy do Light Painting! Ciesz się tworzeniem sztuki światłem! ✨**
