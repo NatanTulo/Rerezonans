@@ -47,14 +47,13 @@ ServoConfig servoCfg[NUM_SERVOS] = {
     {1000, 2000, 0, false}, // ch 4 (MG90S)
 };
 
-// LED (use transistor/MOSFET). Pick a safe pin.
-static const int LED_PIN = 16;
-static const int LEDC_CH = 0;
-static const int LEDC_FREQ = 1000; // 1 kHz
-static const int LEDC_RES = 8;     // 0..255
-
 // Servo frequency
 static float SERVO_HZ = 50.0f;
+
+// Servo PWM settings (from test.cpp)
+#define SERVOMIN 123
+#define SERVOMAX 590
+#define SERVO_FREQ 50
 
 // ========= Internals =========
 Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(PCA9685_ADDR);
@@ -137,16 +136,31 @@ uint16_t angleToUs(uint8_t idx, float deg) {
 
 void writeServoDeg(uint8_t idx, float deg) {
   uint8_t ch = SERVO_CH[idx];
-  uint16_t us = angleToUs(idx, deg);
-  uint16_t tick = usToTick(us, SERVO_HZ);
-  pca.setPWM(ch, 0, tick);
+  
+  // Clamp to -90..+90
+  float d = deg;
+  if (d < -90.0f) d = -90.0f;
+  if (d > +90.0f) d = +90.0f;
+
+  // Map -90..+90 to SERVOMIN..SERVOMAX
+  float t = (d + 90.0f) / 180.0f; // -90->0, 0->0.5, +90->1
+  
+  // Apply servo config invert if needed
+  const ServoConfig &cfg = servoCfg[idx];
+  if (cfg.invert) t = 1.0f - t;
+  
+  uint16_t pulse = SERVOMIN + (uint16_t)(t * (SERVOMAX - SERVOMIN));
+  
+  pca.setPWM(ch, 0, pulse);
 }
 
 void applyAllOutputs() {
   for (uint8_t i = 0; i < NUM_SERVOS; i++) {
     writeServoDeg(i, currDeg[i]);
   }
-  ledcWrite(LEDC_CH, currLed);
+  // Use PCA9685 channel 15 for LED
+  uint16_t pwm_val = (uint16_t)((currLed * 4095) / 255); // Convert 0-255 to 0-4095
+  pca.setPWM(15, 0, pwm_val);
   
   // Update RGB LED
   rgbLed.setPixelColor(0, rgbLed.Color(currR, currG, currB));
@@ -227,7 +241,9 @@ void updateMotion() {
 void setLed(uint8_t val) {
   targetLed = val;
   currLed = val;
-  ledcWrite(LEDC_CH, val);
+  // Use PCA9685 channel 15 for LED (like in test.cpp)
+  uint16_t pwm_val = (uint16_t)((val * 4095) / 255); // Convert 0-255 to 0-4095
+  pca.setPWM(15, 0, pwm_val);
 }
 
 void setRgbLed(uint8_t r, uint8_t g, uint8_t b) {
@@ -242,8 +258,7 @@ void setRgbLed(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 void setPwmFreq(float hz) {
-  SERVO_HZ = hz;
-  pca.setPWMFreq(SERVO_HZ);
+  pca.setPWMFreq(hz);
   delay(10);
 }
 
@@ -578,13 +593,16 @@ void setup() {
   Serial.println("Starting ESP32 RoboArm with WiFi and WebSocket...");
 
   // Initialize I2C and PCA9685
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN, 400000); // 400 kHz
-  pca.begin();
-  setPwmFreq(SERVO_HZ); // 50 Hz
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Serial.printf("I2C uruchomiony: SDA=%d, SCL=%d\n", I2C_SDA_PIN, I2C_SCL_PIN);
 
-  // Initialize PWM LED
-  ledcSetup(LEDC_CH, LEDC_FREQ, LEDC_RES);
-  ledcAttachPin(LED_PIN, LEDC_CH);
+  // Initialize PCA9685
+  pca.begin();
+  pca.setOscillatorFrequency(27000000);
+  pca.setPWMFreq(SERVO_HZ); // 50 Hz
+  delay(10);
+
+  // Initialize LED on PCA9685 channel 15
   setLed(0);
 
   // Initialize RGB LED

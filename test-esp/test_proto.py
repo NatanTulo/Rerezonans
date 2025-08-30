@@ -2,6 +2,11 @@
 """Testowy klient WebSocket JSON dla firmware'u robota.
 
 Wysyła przykładowe polecenia JSON przez WebSocket i drukuje odpowiedzi.
+Testuje wszystkie tryby sterowania:
+- frame: standardowy tryb z potwierdzeniem
+- rt_frame: real-time (fire-and-forget)  
+- trajectory: buforowanie sekwencji na ESP32
+- stream: tryb strumieniowy z kompaktowymi danymi
 """
 
 import argparse
@@ -13,6 +18,32 @@ from typing import List
 
 import websockets
 from websockets.exceptions import ConnectionClosed
+
+
+async def test_stream_mode(websocket):
+    """Testuje tryb stream - wysyła kilka pozycji w trybie strumieniowym."""
+    print("\n=== TEST STREAM MODE ===")
+    
+    # Wysyłanie pozycji w trybie stream (bez polecenia start - już wysłane)
+    import math
+    stream_positions = []
+    for i in range(5):
+        t = i / 4.0  # 0 do 1
+        angle = 20 * math.sin(2 * math.pi * t)
+        pos = [angle, -angle, 0, 0, 0]
+        stream_positions.append(pos)
+    
+    for i, pos in enumerate(stream_positions):
+        print(f"Wysyłam pozycję stream {i+1}: {pos}")
+        await websocket.send(json.dumps(pos, separators=(",", ":")))
+        await asyncio.sleep(0.2)  # 5 Hz
+    
+    # Zatrzymaj stream mode
+    print("Zatrzymuję stream mode...")
+    stop_cmd = {"cmd": "stream_stop"}
+    lines = await send_and_recv(websocket, stop_cmd, read_timeout=2.0)
+    for l in lines:
+        print("<-", l)
 
 
 async def send_and_recv(websocket, obj: dict, read_timeout: float = 3.0) -> List[str]:
@@ -42,19 +73,45 @@ async def run_sequence(websocket):
         ("rgb=red", {"cmd": "rgb", "r": 255, "g": 0, "b": 0}),
         ("frame sample with RGB blue", {"cmd": "frame", "deg": [10, -20, 15, -5, 30], "ms": 1000, "led": 200, "rgb": {"r": 0, "g": 0, "b": 255}}),
         ("status request", {"cmd": "status"}),
+        ("rt_frame test (fire-and-forget)", {"cmd": "rt_frame", "deg": [20, -10, 0, 15, -25], "ms": 100}),
+        ("led=256", {"cmd": "led", "val": 256}),
+        ("trajectory test", {"cmd": "trajectory", "points": [
+            {"deg": [0, 0, 0, 0, 0], "ms": 300, "rgb": {"r": 255, "g": 0, "b": 0}},
+            {"deg": [30, -20, 15, -10, 25], "ms": 500, "rgb": {"r": 0, "g": 255, "b": 0}},
+            {"deg": [0, 0, 0, 0, 0], "ms": 300, "rgb": {"r": 0, "g": 0, "b": 255}}
+        ]}),
         ("rgb=purple", {"cmd": "rgb", "r": 128, "g": 0, "b": 128}),
+        ("stream test start", {"cmd": "stream_start", "freq": 10}),
         ("home again", {"cmd": "home", "ms": 500, "rgb": {"r": 0, "g": 255, "b": 0}}),
+        ("led=64", {"cmd": "led", "val": 64})
     ]
 
     for name, cmd in seq:
         print("---\nWysyłam:", name, json.dumps(cmd))
-        lines = await send_and_recv(websocket, cmd, read_timeout=2.0)
+        
+        # rt_frame nie zwraca odpowiedzi (fire-and-forget)
+        if cmd.get("cmd") == "rt_frame":
+            await websocket.send(json.dumps(cmd, separators=(",", ":")))
+            print("<- (brak odpowiedzi - fire-and-forget)")
+            await asyncio.sleep(0.2)
+            continue
+            
+        lines = await send_and_recv(websocket, cmd, read_timeout=3.0)
         if not lines:
             print("Brak odpowiedzi (timeout)")
         else:
             for l in lines:
                 print("<-", l)
-        await asyncio.sleep(0.5)  # Krótka pauza między poleceniami
+        
+        # Dłuższa pauza po trajectory
+        if cmd.get("cmd") == "trajectory":
+            print("Czekam na wykonanie trajektorii...")
+            await asyncio.sleep(2.0)
+        else:
+            await asyncio.sleep(0.5)  # Krótka pauza między poleceniami
+    
+    # Test stream mode
+    await test_stream_mode(websocket)
 
 
 async def connect_websocket(host: str, port: int):
@@ -83,6 +140,16 @@ async def main():
         {"cmd": "rgb", "r": 255, "g": 0, "b": 0},
         {"cmd": "frame", "deg": [10, -20, 15, -5, 30], "ms": 1000, "led": 200, "rgb": {"r": 0, "g": 0, "b": 255}},
         {"cmd": "status"},
+        {"cmd": "rt_frame", "deg": [20, -10, 0, 15, -25], "ms": 100},
+        {"cmd": "trajectory", "points": [
+            {"deg": [0, 0, 0, 0, 0], "ms": 300, "rgb": {"r": 255, "g": 0, "b": 0}},
+            {"deg": [30, -20, 15, -10, 25], "ms": 500, "rgb": {"r": 0, "g": 255, "b": 0}},
+            {"deg": [0, 0, 0, 0, 0], "ms": 300, "rgb": {"r": 0, "g": 0, "b": 255}}
+        ]},
+        {"cmd": "stream_start", "freq": 10},
+        [20, -20, 0, 0, 0],  # przykład danych stream
+        [0, 0, 0, 0, 0],     # przykład danych stream
+        {"cmd": "stream_stop"},
     ]
 
     if args.dry:
