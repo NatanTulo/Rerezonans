@@ -135,8 +135,11 @@ class App(tk.Tk):
         self.geometry("800x700")
         self.client = WebSocketClient(HOST, PORT, self.show_output, self.update_connection_status)
         self.param_vars = {}
+        self.param_entries = []  # Lista wszystkich pól entry dla nawigacji klawiaturą
+        self.current_entry_index = 0  # Indeks aktualnie aktywnego pola
         self.ping_timer = None
         self.create_widgets()
+        self.setup_keyboard_bindings()
         self.start_ping_timer()
 
     def create_widgets(self):
@@ -263,12 +266,42 @@ class App(tk.Tk):
         # Initialize parameters for first command
         self.update_parameters()
 
+    def setup_keyboard_bindings(self):
+        """Konfiguruje obsługę klawiatury"""
+        # Globalne skróty klawiszowe
+        self.bind_all("<Return>", self.keyboard_send_command)
+        self.bind_all("<KP_Enter>", self.keyboard_send_command)
+        
+        # Nawigacja po parametrach - strzałki
+        self.bind_all("<Right>", self.keyboard_next_parameter)
+        self.bind_all("<Left>", self.keyboard_prev_parameter)
+        self.bind_all("<Up>", self.keyboard_increase_value)
+        self.bind_all("<Down>", self.keyboard_decrease_value)
+        
+        # Nawigacja po parametrach - WASD
+        self.bind_all("<KeyPress-d>", self.keyboard_next_parameter)
+        self.bind_all("<KeyPress-a>", self.keyboard_prev_parameter)
+        self.bind_all("<KeyPress-w>", self.keyboard_increase_value)
+        self.bind_all("<KeyPress-s>", self.keyboard_decrease_value)
+        
+        # Wielkie litery również
+        self.bind_all("<KeyPress-D>", self.keyboard_next_parameter)
+        self.bind_all("<KeyPress-A>", self.keyboard_prev_parameter)
+        self.bind_all("<KeyPress-W>", self.keyboard_increase_value)
+        self.bind_all("<KeyPress-S>", self.keyboard_decrease_value)
+        
+        # Tab również do nawigacji
+        self.bind_all("<Tab>", self.keyboard_next_parameter)
+        self.bind_all("<Shift-Tab>", self.keyboard_prev_parameter)
+
     def create_param_widgets(self, params):
         # Clear existing parameter widgets
         for widget in self.params_frame.winfo_children():
             widget.destroy()
         
         self.param_vars.clear()
+        self.param_entries.clear()  # Wyczyść listę pól entry
+        self.current_entry_index = 0  # Reset indeksu
         
         if not params:
             no_params_label = ttk.Label(self.params_frame, text="Ta komenda nie wymaga parametrów", 
@@ -300,6 +333,7 @@ class App(tk.Tk):
                     entry = ttk.Entry(servo_frame, textvariable=var, width=8)
                     entry.grid(row=servo_row, column=servo_col*2+1, padx=(0, 15), pady=2)
                     self.param_vars[key].append(var)
+                    self.param_entries.append(entry)  # Dodaj do listy nawigacji
                 
             elif key == "rgb" and isinstance(value, dict):
                 # Special handling for RGB values
@@ -317,6 +351,7 @@ class App(tk.Tk):
                     entry = ttk.Entry(rgb_frame, textvariable=var, width=8)
                     entry.grid(row=i, column=1, padx=(0, 10), pady=1)
                     self.param_vars[key][color] = var
+                    self.param_entries.append(entry)  # Dodaj do listy nawigacji
                     
             elif key == "points":
                 # Special handling for trajectory points - simplified
@@ -338,6 +373,7 @@ class App(tk.Tk):
                 entry = ttk.Entry(container, textvariable=var, width=25)
                 entry.grid(row=row, column=1, sticky="w", pady=(5, 2))
                 self.param_vars[key] = var
+                self.param_entries.append(entry)  # Dodaj do listy nawigacji
                 
                 # Add helper text for some parameters
                 help_text = self.get_param_help(key)
@@ -350,6 +386,12 @@ class App(tk.Tk):
         # Update canvas scroll region
         container.update_idletasks()
         self.params_canvas.configure(scrollregion=self.params_canvas.bbox("all"))
+        
+        # Ustaw fokus na pierwsze pole jeśli istnieją parametry
+        if self.param_entries:
+            self.current_entry_index = 0
+            self.param_entries[0].focus_set()
+            self.highlight_current_entry()
 
     def get_param_label(self, key):
         labels = {
@@ -544,6 +586,121 @@ class App(tk.Tk):
         """Automatyczny ping (bez logowania)"""
         if hasattr(self.client, 'send_ping'):
             self.client.send_ping()
+
+    def highlight_current_entry(self):
+        """Podświetla aktualnie zaznaczone pole parametru"""
+        # Usuń poprzednie podświetlenie
+        for entry in self.param_entries:
+            entry.config(bg="white")
+        
+        # Podświetl aktualne pole
+        if 0 <= self.current_entry_index < len(self.param_entries):
+            current_entry = self.param_entries[self.current_entry_index]
+            current_entry.config(bg="lightblue")
+            current_entry.focus_set()
+
+    def keyboard_send_command(self, event=None):
+        """Wysyła aktualnie wybraną komendę (Enter)"""
+        self.send_command()
+
+    def keyboard_next_parameter(self, event=None):
+        """Przechodzi do następnego parametru (strzałka w prawo/D)"""
+        if self.param_entries:
+            self.current_entry_index = (self.current_entry_index + 1) % len(self.param_entries)
+            self.highlight_current_entry()
+
+    def keyboard_prev_parameter(self, event=None):
+        """Przechodzi do poprzedniego parametru (strzałka w lewo/A)"""
+        if self.param_entries:
+            self.current_entry_index = (self.current_entry_index - 1) % len(self.param_entries)
+            self.highlight_current_entry()
+
+    def keyboard_increase_value(self, event=None):
+        """Zwiększa wartość aktualnego parametru (strzałka w górę/W)"""
+        if not self.param_entries or not (0 <= self.current_entry_index < len(self.param_entries)):
+            return
+            
+        entry = self.param_entries[self.current_entry_index]
+        current_value = entry.get()
+        
+        try:
+            # Sprawdź typ parametru na podstawie nazwy
+            param_name = self.get_entry_param_name(entry)
+            
+            if param_name in ['servo1', 'servo2', 'servo3', 'servo4', 'servo5', 'servo6']:
+                # Kąty serw - krok 5 stopni (0-180)
+                new_value = min(180, float(current_value) + 5)
+            elif param_name in ['r', 'g', 'b']:
+                # RGB - krok 10 (0-255)
+                new_value = min(255, int(current_value) + 10)
+            elif param_name == 'freq':
+                # Częstotliwość - krok 50 Hz
+                new_value = float(current_value) + 50
+            else:
+                # Inne parametry - krok 1
+                try:
+                    new_value = float(current_value) + 1
+                except:
+                    new_value = int(current_value) + 1
+                    
+            entry.delete(0, tk.END)
+            entry.insert(0, str(int(new_value) if isinstance(new_value, float) and new_value.is_integer() else new_value))
+        except ValueError:
+            pass  # Ignoruj błędy konwersji
+
+    def keyboard_decrease_value(self, event=None):
+        """Zmniejsza wartość aktualnego parametru (strzałka w dół/S)"""
+        if not self.param_entries or not (0 <= self.current_entry_index < len(self.param_entries)):
+            return
+            
+        entry = self.param_entries[self.current_entry_index]
+        current_value = entry.get()
+        
+        try:
+            # Sprawdź typ parametru na podstawie nazwy
+            param_name = self.get_entry_param_name(entry)
+            
+            if param_name in ['servo1', 'servo2', 'servo3', 'servo4', 'servo5', 'servo6']:
+                # Kąty serw - krok 5 stopni (0-180)
+                new_value = max(0, float(current_value) - 5)
+            elif param_name in ['r', 'g', 'b']:
+                # RGB - krok 10 (0-255)
+                new_value = max(0, int(current_value) - 10)
+            elif param_name == 'freq':
+                # Częstotliwość - krok 50 Hz (minimum 50)
+                new_value = max(50, float(current_value) - 50)
+            else:
+                # Inne parametry - krok 1
+                try:
+                    new_value = float(current_value) - 1
+                except:
+                    new_value = int(current_value) - 1
+                    
+            entry.delete(0, tk.END)
+            entry.insert(0, str(int(new_value) if isinstance(new_value, float) and new_value.is_integer() else new_value))
+        except ValueError:
+            pass  # Ignoruj błędy konwersji
+
+    def get_entry_param_name(self, entry):
+        """Znajduje nazwę parametru dla danego Entry widget"""
+        # Sprawdź w current_params
+        for param_name, param_entry in getattr(self, 'current_params', {}).items():
+            if param_entry == entry:
+                return param_name
+        
+        # Sprawdź w servo params
+        servo_params = getattr(self, 'servo_params', {})
+        for servo_name, servo_entry in servo_params.items():
+            if servo_entry == entry:
+                return servo_name
+        
+        # Sprawdź w rgb params
+        rgb_params = getattr(self, 'rgb_params', {})
+        for color_name, color_entry in rgb_params.items():
+            if color_entry == entry:
+                return color_name
+                
+        return "unknown"
 
     def on_closing(self):
         """Obsługa zamykania aplikacji"""
