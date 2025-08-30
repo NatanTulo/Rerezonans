@@ -13,7 +13,7 @@ COMMANDS = {
     "led": {"val": 64},
     "rgb": {"r": 255, "g": 0, "b": 0},
     "freq": {"hz": 50.0},
-    "config": {"ch": 0, "min_us": 1000, "max_us": 2000, "offset_us": 0, "invert": False},
+    "config": {"ch": 0, "min_us": 620, "max_us": 2520, "offset_us": 0, "invert": False},
     "frame": {"deg": [10, -20, 15, -5, 30], "ms": 1000, "led": 200, "rgb": {"r": 0, "g": 0, "b": 255}},
     "status": {},
     "rt_frame": {"deg": [20, -10, 0, 15, -25], "ms": 100},
@@ -369,17 +369,47 @@ class App(tk.Tk):
                 param_label = ttk.Label(container, text=f"{label_text}:", font=("TkDefaultFont", 10))
                 param_label.grid(row=row, column=0, sticky="w", padx=(0, 10), pady=(5, 2))
                 
-                var = tk.StringVar(value=str(value))
-                entry = ttk.Entry(container, textvariable=var, width=25)
-                entry.grid(row=row, column=1, sticky="w", pady=(5, 2))
-                self.param_vars[key] = var
-                self.param_entries.append(entry)  # Dodaj do listy nawigacji
-                
-                # Add helper text for some parameters
-                help_text = self.get_param_help(key)
-                if help_text:
-                    help_label = ttk.Label(container, text=help_text, foreground="gray", font=("TkDefaultFont", 8))
+                # Specjalne traktowanie dla konfiguracji serwa - dodaj przyciski testowe
+                if key == "ch":
+                    ch_frame = ttk.Frame(container)
+                    ch_frame.grid(row=row, column=1, sticky="w", pady=(5, 2))
+                    
+                    var = tk.StringVar(value=str(value))
+                    entry = ttk.Entry(ch_frame, textvariable=var, width=8)
+                    entry.grid(row=0, column=0, padx=(0, 10))
+                    self.param_vars[key] = var
+                    self.param_entries.append(entry)
+                    
+                    # Przyciski testowe -90° i +90°
+                    test_label = ttk.Label(ch_frame, text="Test ruchu:", font=("TkDefaultFont", 8))
+                    test_label.grid(row=0, column=1, padx=(0, 5))
+                    
+                    btn_minus90 = ttk.Button(ch_frame, text="-90°", width=6,
+                                           command=lambda: self.test_servo_position(-90))
+                    btn_minus90.grid(row=0, column=2, padx=2)
+                    
+                    btn_plus90 = ttk.Button(ch_frame, text="+90°", width=6,
+                                          command=lambda: self.test_servo_position(90))
+                    btn_plus90.grid(row=0, column=3, padx=2)
+                    
+                    # Help text
+                    help_label = ttk.Label(container, text="Numer kanału (0-4) + test pozycji", 
+                                         foreground="gray", font=("TkDefaultFont", 8))
                     help_label.grid(row=row, column=2, sticky="w", padx=(10, 0), pady=(5, 2))
+                    
+                else:
+                    # Standardowe pole dla innych parametrów
+                    var = tk.StringVar(value=str(value))
+                    entry = ttk.Entry(container, textvariable=var, width=25)
+                    entry.grid(row=row, column=1, sticky="w", pady=(5, 2))
+                    self.param_vars[key] = var
+                    self.param_entries.append(entry)  # Dodaj do listy nawigacji
+                    
+                    # Add helper text for some parameters
+                    help_text = self.get_param_help(key)
+                    if help_text:
+                        help_label = ttk.Label(container, text=help_text, foreground="gray", font=("TkDefaultFont", 8))
+                        help_label.grid(row=row, column=2, sticky="w", padx=(10, 0), pady=(5, 2))
             
             row += 1
         
@@ -589,15 +619,22 @@ class App(tk.Tk):
 
     def highlight_current_entry(self):
         """Podświetla aktualnie zaznaczone pole parametru"""
-        # Usuń poprzednie podświetlenie
+        # Usuń poprzednie podświetlenie - używamy selection zamiast bg
         for entry in self.param_entries:
-            entry.config(bg="white")
+            try:
+                entry.config(bg="white")
+            except:
+                pass  # Ignoruj błędy związane z stylami
         
         # Podświetl aktualne pole
         if 0 <= self.current_entry_index < len(self.param_entries):
             current_entry = self.param_entries[self.current_entry_index]
-            current_entry.config(bg="lightblue")
-            current_entry.focus_set()
+            try:
+                current_entry.config(bg="lightblue")
+            except:
+                # Jeśli nie można zmienić tła, użyj focus i selection
+                current_entry.focus_set()
+                current_entry.select_range(0, tk.END)
 
     def keyboard_send_command(self, event=None):
         """Wysyła aktualnie wybraną komendę (Enter)"""
@@ -701,6 +738,46 @@ class App(tk.Tk):
                 return color_name
                 
         return "unknown"
+
+    def test_servo_position(self, angle):
+        """Wysyła komendę frame z testem pozycji wybranego serwa na podany kąt"""
+        try:
+            # Pobierz aktualnie wybrany kanał z pola ch
+            channel = 0
+            if 'ch' in self.param_vars:
+                try:
+                    channel = int(self.param_vars['ch'].get())
+                except ValueError:
+                    channel = 0
+            
+            # Sprawdź czy kanał jest w dozwolonym zakresie
+            if not (0 <= channel <= 4):
+                self.show_output(f"Błąd: kanał musi być w zakresie 0-4, podano: {channel}")
+                return
+            
+            # Sprawdź połączenie
+            if not self.client.connected:
+                self.show_output("Błąd: brak połączenia z ESP32")
+                return
+            
+            # Przygotuj tablicę kątów - wszystkie serwa na 0°, tylko wybrany na podany kąt
+            angles = [0, 0, 0, 0, 0]
+            angles[channel] = angle
+            
+            # Przygotuj parametry komendy frame
+            test_params = {
+                "deg": angles,
+                "ms": 1000,  # 1 sekunda na ruch
+                "led": 64,   # Przytłumione LED
+                "rgb": {"r": 0, "g": 100, "b": 255}  # Niebieski kolor podczas testu
+            }
+            
+            # Wyślij komendę
+            self.show_output(f"🔧 TEST: Serwo {channel} -> {angle}° (pozostałe na 0°)")
+            self.client.send_command("frame", test_params)
+            
+        except Exception as e:
+            self.show_output(f"Błąd podczas testu serwa: {e}")
 
     def on_closing(self):
         """Obsługa zamykania aplikacji"""

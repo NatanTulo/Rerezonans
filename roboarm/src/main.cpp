@@ -38,22 +38,17 @@ struct ServoConfig {
   bool invert;       // invert direction
 };
 
-// Defaults
+// Defaults (values correspond to current PWM 123-590 range)
 ServoConfig servoCfg[NUM_SERVOS] = {
-    {1000, 2000, 0, false}, // ch 0 (MG996R)
-    {1000, 2000, 0, false}, // ch 1 (MG996R)
-    {1000, 2000, 0, false}, // ch 2 (MG996R)
-    {1000, 2000, 0, false}, // ch 3 (MG90S)
-    {1000, 2000, 0, false}, // ch 4 (MG90S)
+    {620, 2520, 0, false}, // ch 0 (MG996R)
+    {620, 2520, 0, false}, // ch 1 (MG996R)
+    {620, 2520, 0, false}, // ch 2 (MG996R)
+    {601, 2881, 0, false}, // ch 3 (MG90S)
+    {601, 2881, 0, false}, // ch 4 (MG90S)
 };
 
 // Servo frequency
 static float SERVO_HZ = 50.0f;
-
-// Servo PWM settings (from test.cpp)
-#define SERVOMIN 123
-#define SERVOMAX 590
-#define SERVO_FREQ 50
 
 // ========= Internals =========
 Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(PCA9685_ADDR);
@@ -142,14 +137,23 @@ void writeServoDeg(uint8_t idx, float deg) {
   if (d < -90.0f) d = -90.0f;
   if (d > +90.0f) d = +90.0f;
 
-  // Map -90..+90 to SERVOMIN..SERVOMAX
+  // Map -90..+90 to 0..1
   float t = (d + 90.0f) / 180.0f; // -90->0, 0->0.5, +90->1
   
   // Apply servo config invert if needed
   const ServoConfig &cfg = servoCfg[idx];
   if (cfg.invert) t = 1.0f - t;
   
-  uint16_t pulse = SERVOMIN + (uint16_t)(t * (SERVOMAX - SERVOMIN));
+  // Convert angle to microseconds using ServoConfig
+  float usf = cfg.min_us + t * (cfg.max_us - cfg.min_us);
+  int32_t us = (int32_t)(usf + 0.5f) + cfg.offset_us;
+  
+  // Safety clamp
+  if (us < 500) us = 500;
+  if (us > 3000) us = 3000;
+  
+  // Convert microseconds to PWM value for PCA9685
+  uint16_t pulse = usToTick((uint16_t)us, SERVO_HZ);
   
   pca.setPWM(ch, 0, pulse);
 }
