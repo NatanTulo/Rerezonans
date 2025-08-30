@@ -80,6 +80,26 @@ uint32_t moveDurMs = 0;
 static const uint32_t UPDATE_DT_MS = 15;
 uint32_t lastUpdateMs = 0;
 
+// ========= Advanced control modes =========
+// Trajectory buffer
+struct TrajectoryPoint {
+  float deg[NUM_SERVOS];
+  uint32_t duration_ms;
+  uint8_t led_val;
+  uint8_t r, g, b;
+};
+
+static const uint8_t MAX_TRAJECTORY_POINTS = 20;
+TrajectoryPoint trajectoryBuffer[MAX_TRAJECTORY_POINTS];
+uint8_t trajectoryCount = 0;
+uint8_t trajectoryIndex = 0;
+bool trajectoryMode = false;
+
+// Stream mode
+bool streamMode = false;
+uint32_t streamFreq = 20; // Hz
+uint32_t lastStreamUpdateMs = 0;
+
 // Reusable JSON documents (ArduinoJson 7+: use JsonDocument)
 JsonDocument rxDoc;
 JsonDocument txDoc;
@@ -155,6 +175,24 @@ void startMove(const float *deg, uint32_t durationMs, uint8_t ledVal, uint8_t r 
 
 void updateMotion() {
   uint32_t now = millis();
+  
+  // Handle trajectory mode
+  if (trajectoryMode && trajectoryCount > 0) {
+    if (!moving && trajectoryIndex < trajectoryCount) {
+      // Start next trajectory point
+      const TrajectoryPoint &point = trajectoryBuffer[trajectoryIndex];
+      startMove(point.deg, point.duration_ms, point.led_val, point.r, point.g, point.b);
+      trajectoryIndex++;
+      
+      // Check if trajectory is complete
+      if (trajectoryIndex >= trajectoryCount) {
+        trajectoryMode = false;
+        trajectoryCount = 0;
+        trajectoryIndex = 0;
+      }
+    }
+  }
+  
   if (!moving) return;
 
   float t = (float)(now - moveStartMs) / (float)moveDurMs;
@@ -239,6 +277,11 @@ void sendStatus(uint8_t clientNum) {
   txDoc["rgb"]["r"] = currR;
   txDoc["rgb"]["g"] = currG;
   txDoc["rgb"]["b"] = currB;
+  txDoc["trajectory_mode"] = trajectoryMode;
+  txDoc["trajectory_points"] = trajectoryCount;
+  txDoc["trajectory_index"] = trajectoryIndex;
+  txDoc["stream_mode"] = streamMode;
+  txDoc["stream_freq"] = streamFreq;
   String response;
   serializeJson(txDoc, response);
   webSocket.sendTXT(clientNum, response);
@@ -267,6 +310,29 @@ void handleJsonMessage(uint8_t clientNum, const char *payload) {
   if (err) {
     sendError(clientNum, "bad_json");
     return;
+  }
+
+  // Check if this is stream data (array of angles in stream mode)
+  if (streamMode && rxDoc.is<JsonArray>()) {
+    JsonArray arr = rxDoc.as<JsonArray>();
+    if (arr.size() >= NUM_SERVOS) {
+      uint32_t now = millis();
+      uint32_t interval = 1000 / streamFreq;
+      
+      // Throttle stream updates based on frequency
+      if (now - lastStreamUpdateMs >= interval) {
+        float d[NUM_SERVOS];
+        for (uint8_t i = 0; i < NUM_SERVOS; i++) {
+          d[i] = (i < arr.size()) ? (float)arr[i].as<float>() : currDeg[i];
+        }
+        
+        // Very short duration for stream mode
+        uint32_t ms = max<uint32_t>(10, interval / 2);
+        startMove(d, ms, currLed, currR, currG, currB);
+        lastStreamUpdateMs = now;
+      }
+    }
+    return; // No response in stream mode
   }
 
   const char *cmd = rxDoc["cmd"] | "";
@@ -371,6 +437,92 @@ void handleJsonMessage(uint8_t clientNum, const char *payload) {
     return;
   }
 
+  if (strcmp(cmd, "rt_frame") == 0) {
+    // Real-time frame - fire and forget, no response for minimal latency
+    JsonArray arr = rxDoc["deg"].as<JsonArray>();
+    if (arr.isNull() || arr.size() == 0) {
+      // Silent fail for real-time mode
+      return;
+    }
+    float d[NUM_SERVOS];
+    for (uint8_t i = 0; i < NUM_SERVOS; i++) {
+      d[i] = (i < arr.size()) ? (float)arr[i].as<float>() : currDeg[i];
+    }
+    uint32_t ms = rxDoc["ms"] | 50; // Default 50ms for fast updates
+    int ledVal = rxDoc["led"] | currLed;
+    if (ledVal < 0) ledVal = currLed;
+    
+    uint8_t r = rxDoc["rgb"]["r"] | currR;
+    uint8_t g = rxDoc["rgb"]["g"] | currG;
+    uint8_t b = rxDoc["rgb"]["b"] | currB;
+    
+    startMove(d, ms, (uint8_t)ledVal, r, g, b);
+    // No response - fire and forget for minimum latency
+    return;
+  }
+
+  if (strcmp(cmd, "trajectory") == 0) {
+    // Buffer trajectory points for smooth execution
+    JsonArray points = rxDoc["points"].as<JsonArray>();
+    if (points.isNull() || points.size() == 0) {
+      sendError(clientNum, "missing_points");
+      return;
+    }
+    
+    if (points.size() > MAX_TRAJECTORY_POINTS) {
+      sendError(clientNum, "too_many_points");
+      return;
+    }
+    
+    // Stop current trajectory
+    trajectoryMode = false;
+    trajectoryCount = 0;
+    trajectoryIndex = 0;
+    
+    // Load new trajectory
+    for (uint8_t p = 0; p < points.size() && p < MAX_TRAJECTORY_POINTS; p++) {
+      JsonObject point = points[p];
+      JsonArray deg = point["deg"];
+      
+      TrajectoryPoint &tp = trajectoryBuffer[p];
+      for (uint8_t i = 0; i < NUM_SERVOS; i++) {
+        tp.deg[i] = (i < deg.size()) ? (float)deg[i].as<float>() : currDeg[i];
+      }
+      tp.duration_ms = point["ms"] | 200;
+      tp.led_val = point["led"] | currLed;
+      tp.r = point["rgb"]["r"] | currR;
+      tp.g = point["rgb"]["g"] | currG;
+      tp.b = point["rgb"]["b"] | currB;
+    }
+    
+    trajectoryCount = points.size();
+    trajectoryIndex = 0;
+    trajectoryMode = true;
+    
+    sendOk(clientNum);
+    return;
+  }
+
+  if (strcmp(cmd, "stream_start") == 0) {
+    // Start stream mode
+    streamFreq = rxDoc["freq"] | 20;
+    if (streamFreq < 1) streamFreq = 1;
+    if (streamFreq > 100) streamFreq = 100;
+    
+    streamMode = true;
+    lastStreamUpdateMs = millis();
+    
+    sendOk(clientNum);
+    return;
+  }
+
+  if (strcmp(cmd, "stream_stop") == 0) {
+    // Stop stream mode
+    streamMode = false;
+    sendOk(clientNum);
+    return;
+  }
+
   if (strcmp(cmd, "status") == 0) {
     sendStatus(clientNum);
     return;
@@ -394,6 +546,12 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t leng
       txDoc["ready"] = true;
       txDoc["servos"] = NUM_SERVOS;
       txDoc["wifi_ip"] = WiFi.softAPIP().toString();
+      JsonArray modes = txDoc["modes"].to<JsonArray>();
+      modes.add("frame");        // Standard frame with response
+      modes.add("rt_frame");     // Real-time frame (fire-and-forget)
+      modes.add("trajectory");   // Buffered trajectory
+      modes.add("stream_start"); // Stream mode
+      modes.add("stream_stop");  // Stop stream
       String welcome;
       serializeJson(txDoc, welcome);
       webSocket.sendTXT(num, welcome);
