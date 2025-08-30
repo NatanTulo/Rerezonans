@@ -1,0 +1,230 @@
+import ikpy.chain
+from ikpy.link import DHLink, OriginLink
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+
+PI = np.pi
+
+# Parametry robota
+L1, L2, L3, L4, L5 = 1, 1, 1, 1, 1
+alpha1, alpha2, alpha3, alpha4, alpha5 = PI/2, 0, -PI/2, 0, PI/2
+lam1, lam2, lam3, lam4, lam5 = 0, L2, 0, 0, L3
+del1, del2, del3, del4, del5 = L1, 0, L3, L4, 0
+
+# Definicja łańcucha kinematycznego
+my_chain = ikpy.chain.Chain([
+    OriginLink(),
+    # DHLink(name="joint_0", d=0, a=0, alpha=0, bounds=(-PI/2, PI/2)),
+    DHLink(name="joint_1", d=del1, a=lam1, alpha=alpha1, bounds=(-PI/2, PI/2)),
+    DHLink(name="joint_2", d=del2, a=lam2, alpha=alpha2, bounds=(-PI/2, PI/2)),
+    DHLink(name="joint_3", d=del3, a=lam3, alpha=alpha3, bounds=(-PI/2, PI/2)),
+    DHLink(name="joint_4", d=del4, a=lam4, alpha=alpha4, bounds=(-PI/2, PI/2)),
+    DHLink(name="joint_5", d=del5, a=lam5, alpha=alpha5, bounds=(-PI/2, PI/2))
+])
+
+def get_joint_positions_debug(angles):
+    """Oblicza pozycje przegubów z debugowaniem"""
+    positions = []
+    current_transform = np.eye(4)
+    
+    # Pozycja bazowa
+    positions.append(current_transform[:3, 3].copy())
+    print(f"Base position: {current_transform[:3, 3]}")
+    
+    # Dla każdego linka
+    for i, link in enumerate(my_chain.links):
+        if hasattr(link, 'get_transformation_matrix'):
+            angle = angles[i] if i < len(angles) else 0
+            
+            # Pobierz parametry DH
+            d = getattr(link, 'd', 0)
+            a = getattr(link, 'a', 0) 
+            alpha = getattr(link, 'alpha', 0)
+            
+            print(f"Link {i}: angle={angle:.3f}, d={d}, a={a}, alpha={alpha:.3f}")
+            
+            link_transform = link.get_transformation_matrix(angle)
+            current_transform = current_transform @ link_transform
+            pos = current_transform[:3, 3].copy()
+            positions.append(pos)
+            
+            print(f"  Position: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]")
+    
+    return np.array(positions)
+
+def get_joint_positions_manual(angles):
+    """Ręczne obliczanie pozycji przegubów używając bezpośrednio DH"""
+    positions = []
+    current_transform = np.eye(4)
+    
+    # Pozycja bazowa
+    positions.append(current_transform[:3, 3].copy())
+    
+    # Parametry DH dla każdego jointa
+    dh_params = [
+        (del1, lam1, alpha1),  # joint 1
+        (del2, lam2, alpha2),  # joint 2
+        (del3, lam3, alpha3),  # joint 3
+        (del4, lam4, alpha4),  # joint 4
+        (del5, lam5, alpha5)   # joint 5
+    ]
+    
+    for i, (d, a, alpha) in enumerate(dh_params):
+        if i + 1 < len(angles):  # Pomijamy OriginLink
+            theta = angles[i + 1]
+            
+            # Ręczna macierz DH
+            cos_theta = np.cos(theta)
+            sin_theta = np.sin(theta)
+            cos_alpha = np.cos(alpha)
+            sin_alpha = np.sin(alpha)
+            
+            dh_matrix = np.array([
+                [cos_theta, -sin_theta * cos_alpha,  sin_theta * sin_alpha, a * cos_theta],
+                [sin_theta,  cos_theta * cos_alpha, -cos_theta * sin_alpha, a * sin_theta],
+                [0,          sin_alpha,             cos_alpha,             d],
+                [0,          0,                     0,                     1]
+            ])
+            
+            current_transform = current_transform @ dh_matrix
+            positions.append(current_transform[:3, 3].copy())
+    
+    return np.array(positions)
+
+# Test obu metod
+initial_position_linear = [0, 0, 0, 0, 0, 0]
+target_position = [3, 0.2, 0.0]
+
+print("=== DEBUGGING POZYCJI PRZEGUBÓW ===")
+print("METODA 1 (ikpy):")
+positions_ikpy = get_joint_positions_debug(initial_position_linear)
+
+print("\nMETODA 2 (ręczna):")
+positions_manual = get_joint_positions_manual(initial_position_linear)
+
+print("\nPorównanie pozycji:")
+for i, (pos1, pos2) in enumerate(zip(positions_ikpy, positions_manual)):
+    print(f"Joint {i}: ikpy={pos1}, manual={pos2}")
+
+# Sprawdź czy wszystkie pozycje są różne
+unique_positions_ikpy = np.unique(positions_ikpy.round(3), axis=0)
+unique_positions_manual = np.unique(positions_manual.round(3), axis=0)
+
+print(f"\nUnikalne pozycje ikpy: {len(unique_positions_ikpy)}/{len(positions_ikpy)}")
+print(f"Unikalne pozycje manual: {len(unique_positions_manual)}/{len(positions_manual)}")
+
+# Jeśli pozycje są identyczne, użyj ręcznej metody
+use_manual = len(unique_positions_ikpy) <= 2  # Jeśli mniej niż 3 unikalne pozycje
+
+# Kinematyka odwrotna
+joint_angles_target = my_chain.inverse_kinematics(target_position, initial_position=initial_position_linear)
+
+print("\n=== KĄTY DOCELOWE ===")
+for i in range(1, len(joint_angles_target)):
+    print(f"θ{i} = {joint_angles_target[i]:.4f} rad = {np.degrees(joint_angles_target[i]):.2f}°")
+
+# Parametry animacji
+num_steps = 100
+joint_angles_start = np.array(initial_position_linear)
+joint_angles_end = np.array(joint_angles_target)
+joint_trajectories = np.array([np.linspace(start, end, num_steps) 
+                              for start, end in zip(joint_angles_start, joint_angles_end)]).T
+
+# Wybór funkcji obliczającej pozycje
+get_positions = get_joint_positions_manual if use_manual else get_joint_positions_debug
+
+# Inicjalizacja wykresu 3D
+fig = plt.figure(figsize=(14, 10))
+ax = fig.add_subplot(111, projection='3d')
+
+ax.set_xlim(-4, 4)
+ax.set_ylim(-4, 4)
+ax.set_zlim(-1, 5)
+ax.set_xlabel('X [m]')
+ax.set_ylabel('Y [m]')
+ax.set_zlabel('Z [m]')
+
+# Elementy wizualizacji
+robot_links, = ax.plot([], [], [], 'b-', linewidth=4, label='Robot links')
+robot_joints, = ax.plot([], [], [], 'ro', markersize=12, label='Joints')
+
+# Punkt docelowy
+target_point = ax.scatter(*target_position, color='green', s=200, marker='*', label='Target')
+
+# Numerowanie przegubów (teksty)
+joint_texts = []
+for i in range(6):  # 6 przegubów (0-5)
+    text = ax.text(0, 0, 0, f'J{i}', fontsize=10, color='black')
+    joint_texts.append(text)
+
+# Dynamiczny tytuł
+title = ax.text2D(0.5, 0.95, '', transform=ax.transAxes, ha='center', fontsize=14, weight='bold')
+
+ax.legend(loc='upper right')
+ax.view_init(elev=25, azim=45)
+
+def animate(frame):
+    """Funkcja animacji z lepszą wizualizacją"""
+    current_angles = joint_trajectories[frame]
+    joint_positions = get_positions(current_angles)
+    
+    # Aktualizuj linie i punkty
+    robot_links.set_data(joint_positions[:, 0], joint_positions[:, 1])
+    robot_links.set_3d_properties(joint_positions[:, 2])
+    
+    robot_joints.set_data(joint_positions[:, 0], joint_positions[:, 1])
+    robot_joints.set_3d_properties(joint_positions[:, 2])
+    
+    # Aktualizuj teksty numerów przegubów
+    for i, (pos, text) in enumerate(zip(joint_positions, joint_texts)):
+        text.set_position((pos[0], pos[1]))
+        text.set_3d_properties(pos[2] + 0.1)  # Lekko nad przegubem
+    
+    # Informacje o postępie
+    progress = (frame + 1) / num_steps * 100
+    end_effector_pos = joint_positions[-1]
+    distance_to_target = np.linalg.norm(end_effector_pos - np.array(target_position))
+    
+    # Status
+    if frame == 0:
+        status = "POZYCJA STARTOWA"
+    elif frame == num_steps - 1:
+        status = "CEL OSIĄGNIĘTY"
+    else:
+        status = "RUCH DO CELU"
+    
+    title.set_text(f'{status} | Krok: {frame+1}/{num_steps} ({progress:.1f}%)\n'
+                  f'Końcówka: [{end_effector_pos[0]:.3f}, {end_effector_pos[1]:.3f}, {end_effector_pos[2]:.3f}] | '
+                  f'Odległość: {distance_to_target:.4f}m')
+    
+    return [robot_links, robot_joints] + joint_texts
+
+print("=== ANIMACJA ===")
+print("🔴 Czerwone punkty = Przeguby (J0-J5)")
+print("🔵 Niebieskie linie = Segmenty robota")
+print("⭐ Zielona gwiazdka = Pozycja docelowa")
+print(f"🔧 Używana metoda: {'Ręczna DH' if use_manual else 'ikpy'}")
+
+# Tworzenie animacji
+anim = FuncAnimation(fig, animate, frames=num_steps, interval=50, blit=False, repeat=True)
+
+plt.tight_layout()
+plt.show()
+
+# Weryfikacja końcowa
+final_positions = get_positions(joint_angles_target)
+print("\n=== ANALIZA KOŃCOWA ===")
+print("Pozycje wszystkich przegubów:")
+for i, pos in enumerate(final_positions):
+    print(f"J{i}: [{pos[0]:6.3f}, {pos[1]:6.3f}, {pos[2]:6.3f}]")
+
+print(f"\nCEL: {target_position}")
+print(f"OSIĄGNIĘTO: {final_positions[-1]}")
+print(f"BŁĄD: {np.linalg.norm(final_positions[-1] - np.array(target_position)):.6f}m")
+
+# Sprawdź unikalne pozycje
+unique_final = np.unique(final_positions.round(3), axis=0)
+print(f"Unikalne pozycje końcowe: {len(unique_final)}/{len(final_positions)}")
+if len(unique_final) < len(final_positions):
+    print("⚠️  UWAGA: Niektóre przeguby są w tych samych pozycjach!")
