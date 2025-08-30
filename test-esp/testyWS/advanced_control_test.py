@@ -220,6 +220,116 @@ class AdvancedController:
         print(f"   Wysłane pozycje: {frame_count}")
         print(f"   Rzeczywista częstotliwość: {actual_freq:.1f}Hz")
     
+    async def test_config_and_freq(self):
+        """Test konfiguracji serw i częstotliwości PWM."""
+        print(f"\n⚙️  TEST KONFIGURACJI (freq, config)")
+        print("-" * 40)
+        
+        # Test 1: Sprawdź aktualną częstotliwość
+        print("📊 Test częstotliwości PWM...")
+        
+        # Ustaw częstotliwość na 50Hz (domyślna)
+        freq_cmd = {"cmd": "freq", "hz": 50.0}
+        await self.websocket.send(json.dumps(freq_cmd))
+        response = await self.websocket.recv()
+        result = json.loads(response)
+        
+        if result.get("ok"):
+            print("✅ Częstotliwość 50Hz ustawiona pomyślnie")
+        else:
+            print(f"❌ Błąd ustawiania częstotliwości: {result.get('err')}")
+        
+        # Test 2: Test błędnej częstotliwości (poza zakresem)
+        print("🔍 Test błędnej częstotliwości (70Hz - poza zakresem)...")
+        bad_freq_cmd = {"cmd": "freq", "hz": 70.0}
+        await self.websocket.send(json.dumps(bad_freq_cmd))
+        response = await self.websocket.recv()
+        result = json.loads(response)
+        
+        if not result.get("ok"):
+            print(f"✅ Poprawnie odrzucono błędną częstotliwość: {result.get('err')}")
+        else:
+            print("❌ Nieoczekiwanie zaakceptowano błędną częstotliwość")
+        
+        # Test 3: Konfiguracja serwa
+        print("🔧 Test konfiguracji serwa 0...")
+        
+        config_cmd = {
+            "cmd": "config",
+            "ch": 0,
+            "min_us": 1000,
+            "max_us": 2000,
+            "offset_us": 0,
+            "invert": False
+        }
+        
+        await self.websocket.send(json.dumps(config_cmd))
+        response = await self.websocket.recv()
+        result = json.loads(response)
+        
+        if result.get("ok"):
+            print("✅ Konfiguracja serwa 0 ustawiona pomyślnie")
+        else:
+            print(f"❌ Błąd konfiguracji serwa: {result.get('err')}")
+        
+        # Test 4: Konfiguracja z inwersją
+        print("🔄 Test konfiguracji z inwersją (servo 1)...")
+        
+        config_invert_cmd = {
+            "cmd": "config", 
+            "ch": 1,
+            "invert": True,
+            "offset_us": 50  # Lekki offset
+        }
+        
+        await self.websocket.send(json.dumps(config_invert_cmd))
+        response = await self.websocket.recv()
+        result = json.loads(response)
+        
+        if result.get("ok"):
+            print("✅ Konfiguracja z inwersją ustawiona pomyślnie")
+        else:
+            print(f"❌ Błąd konfiguracji z inwersją: {result.get('err')}")
+        
+        # Test 5: Błędny kanał serwa
+        print("❌ Test błędnego kanału serwa (kanał 10)...")
+        
+        bad_config_cmd = {
+            "cmd": "config",
+            "ch": 10,  # Błędny kanał (jest tylko 0-4)
+            "min_us": 1000
+        }
+        
+        await self.websocket.send(json.dumps(bad_config_cmd))
+        response = await self.websocket.recv()
+        result = json.loads(response)
+        
+        if not result.get("ok"):
+            print(f"✅ Poprawnie odrzucono błędny kanał: {result.get('err')}")
+        else:
+            print("❌ Nieoczekiwanie zaakceptowano błędny kanał")
+        
+        # Test 6: Sprawdź działanie po konfiguracji
+        print("🔄 Test ruchu po zmianach konfiguracji...")
+        
+        test_move_cmd = {
+            "cmd": "frame",
+            "deg": [30, -30, 0, 0, 0],  # Servo 0 normalnie, servo 1 odwrócone
+            "ms": 800
+        }
+        
+        await self.websocket.send(json.dumps(test_move_cmd))
+        response = await self.websocket.recv()
+        result = json.loads(response)
+        
+        if result.get("ok"):
+            print("✅ Ruch testowy po konfiguracji wykonany")
+        else:
+            print(f"❌ Błąd ruchu testowego: {result.get('err')}")
+        
+        await asyncio.sleep(1)  # Czas na wykonanie ruchu
+        print("⚙️  Test konfiguracji zakończony")
+    
     async def close(self):
         if self.websocket:
             await self.websocket.close()
@@ -237,6 +347,11 @@ async def main():
         return
     
     try:
+        # Test 0: Configuration and frequency
+        await controller.test_config_and_freq()
+        
+        await asyncio.sleep(1)  # Krótka pauza
+        
         # Test 1: Real-time mode (najszybszy)
         await controller.test_rt_frame_mode()
         
@@ -252,11 +367,14 @@ async def main():
         
         print("\n" + "=" * 50)
         print("🎯 PODSUMOWANIE ZAAWANSOWANYCH TRYBÓW:")
+        print("✅ CONFIG/FREQ - Konfiguracja serw i częstotliwości PWM")
         print("✅ RT_FRAME - Doskonały do sterowania real-time")
         print("✅ TRAJECTORY - Idealny do złożonych sekwencji") 
         print("✅ STREAM - Eksperymentalny tryb strumieniowy")
         print("\n💡 Wszystkie tryby działają płynnie!")
         print("   Można używać różnych trybów w zależności od potrzeb:")
+        print("   • CONFIG: konfiguracja parametrów serw")
+        print("   • FREQ: ustawienie częstotliwości PWM")
         print("   • RT_FRAME: sterowanie w czasie rzeczywistym")
         print("   • TRAJECTORY: długie sekwencje ruchów") 
         print("   • STREAM: ciągły strumień pozycji")

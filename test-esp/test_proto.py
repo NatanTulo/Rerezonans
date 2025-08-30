@@ -7,6 +7,8 @@ Testuje wszystkie tryby sterowania:
 - rt_frame: real-time (fire-and-forget)  
 - trajectory: buforowanie sekwencji na ESP32
 - stream: tryb strumieniowy z kompaktowymi danymi
+- freq: ustawienie częstotliwości PWM serw (40-60 Hz)
+- config: konfiguracja parametrów serw (min_us, max_us, offset_us, invert)
 """
 
 import argparse
@@ -71,10 +73,14 @@ async def run_sequence(websocket):
         ("home (800ms, led=128, rgb=green)", {"cmd": "home", "ms": 800, "led": 128, "rgb": {"r": 0, "g": 255, "b": 0}}),
         ("led=64", {"cmd": "led", "val": 64}),
         ("rgb=red", {"cmd": "rgb", "r": 255, "g": 0, "b": 0}),
+        ("freq=50Hz", {"cmd": "freq", "hz": 50.0}),
+        ("config servo 0", {"cmd": "config", "ch": 0, "min_us": 1000, "max_us": 2000, "offset_us": 0, "invert": False}),
         ("frame sample with RGB blue", {"cmd": "frame", "deg": [10, -20, 15, -5, 30], "ms": 1000, "led": 200, "rgb": {"r": 0, "g": 0, "b": 255}}),
         ("status request", {"cmd": "status"}),
         ("rt_frame test (fire-and-forget)", {"cmd": "rt_frame", "deg": [20, -10, 0, 15, -25], "ms": 100}),
-        ("led=256", {"cmd": "led", "val": 256}),
+        ("led=256 (invalid range test)", {"cmd": "led", "val": 256}),
+        ("freq=70Hz (out of range test)", {"cmd": "freq", "hz": 70.0}),
+        ("config servo 10 (invalid channel test)", {"cmd": "config", "ch": 10, "min_us": 1000, "max_us": 2000}),
         ("trajectory test", {"cmd": "trajectory", "points": [
             {"deg": [0, 0, 0, 0, 0], "ms": 300, "rgb": {"r": 255, "g": 0, "b": 0}},
             {"deg": [30, -20, 15, -10, 25], "ms": 500, "rgb": {"r": 0, "g": 255, "b": 0}},
@@ -83,7 +89,7 @@ async def run_sequence(websocket):
         ("rgb=purple", {"cmd": "rgb", "r": 128, "g": 0, "b": 128}),
         ("stream test start", {"cmd": "stream_start", "freq": 10}),
         ("home again", {"cmd": "home", "ms": 500, "rgb": {"r": 0, "g": 255, "b": 0}}),
-        ("led=64", {"cmd": "led", "val": 64})
+        ("led=64", {"cmd": "led", "val": 8})
     ]
 
     for name, cmd in seq:
@@ -138,6 +144,8 @@ async def main():
         {"cmd": "home", "ms": 800, "led": 128, "rgb": {"r": 0, "g": 255, "b": 0}},
         {"cmd": "led", "val": 64},
         {"cmd": "rgb", "r": 255, "g": 0, "b": 0},
+        {"cmd": "freq", "hz": 50.0},
+        {"cmd": "config", "ch": 0, "min_us": 1000, "max_us": 2000, "offset_us": 0, "invert": False},
         {"cmd": "frame", "deg": [10, -20, 15, -5, 30], "ms": 1000, "led": 200, "rgb": {"r": 0, "g": 0, "b": 255}},
         {"cmd": "status"},
         {"cmd": "rt_frame", "deg": [20, -10, 0, 15, -25], "ms": 100},
@@ -166,18 +174,18 @@ async def main():
         
         await run_sequence(websocket)
         
-        # Nasłuchuj na dodatkowe wiadomości przez krótki czas
-        print("\nNasłuchiwanie na dodatkowe wiadomości (5 sekund)...")
-        try:
-            count = 0
-            deadline = time.time() + 5.0  # 5 sekund zamiast nieskończoności
-            while time.time() < deadline and count < 10:  # max 10 wiadomości
-                remaining = deadline - time.time()
-                msg = await asyncio.wait_for(websocket.recv(), timeout=remaining)
-                print("Otrzymano:", msg)
-                count += 1
-        except asyncio.TimeoutError:
-            print("Timeout - kończenie nasłuchiwania")
+        # # Nasłuchuj na dodatkowe wiadomości przez krótki czas
+        # print("\nNasłuchiwanie na dodatkowe wiadomości (5 sekund)...")
+        # try:
+        #     count = 0
+        #     deadline = time.time() + 5.0  # 5 sekund zamiast nieskończoności
+        #     while time.time() < deadline and count < 10:  # max 10 wiadomości
+        #         remaining = deadline - time.time()
+        #         msg = await asyncio.wait_for(websocket.recv(), timeout=remaining)
+        #         print("Otrzymano:", msg)
+        #         count += 1
+        # except asyncio.TimeoutError:
+        #     print("Timeout - kończenie nasłuchiwania")
             
     except ConnectionClosed:
         print("Połączenie zostało zamknięte")
