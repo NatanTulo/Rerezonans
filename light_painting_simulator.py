@@ -525,11 +525,11 @@ class LightPaintingSimulator(tk.Tk):
         quick_buttons_frame.pack(side="top")
         
         ttk.Button(quick_buttons_frame, text="Blisko", width=6, 
-                  command=lambda: self.set_quick_position(0.2)).pack(side="left", padx=1)
+                  command=lambda: self.set_quick_position(0.7)).pack(side="left", padx=1)
         ttk.Button(quick_buttons_frame, text="Średnio", width=6,
-                  command=lambda: self.set_quick_position(0.5)).pack(side="left", padx=1)
-        ttk.Button(quick_buttons_frame, text="Daleko", width=6,
                   command=lambda: self.set_quick_position(1.0)).pack(side="left", padx=1)
+        ttk.Button(quick_buttons_frame, text="Daleko", width=6,
+                  command=lambda: self.set_quick_position(1.5)).pack(side="left", padx=1)
         
         ttk.Label(param_line, text="Prędkość:").pack(side="left")
         self.speed_var = tk.StringVar(value="50")
@@ -1053,7 +1053,7 @@ class LightPaintingSimulator(tk.Tk):
     def set_quick_position(self, z_value):
         """Szybkie ustawienie pozycji Z"""
         self.offset_z_var.set(str(z_value))
-        position_names = {0.2: "blisko", 0.5: "średnio", 1.0: "daleko"}
+        position_names = {0.7: "blisko", 1.0: "średnio", 1.5: "daleko"}
         name = position_names.get(z_value, "niestandardowo")
         self.log_message(f"📍 Ustawiono pozycję {name} przed robotem (Z = {z_value})")
     
@@ -1099,8 +1099,9 @@ class LightPaintingSimulator(tk.Tk):
         
         # Sprawdź czy painting_ax został utworzony
         if self.painting_ax is not None:
-            self.painting_ax.set_xlim(-2, 2)  # X pozostaje bez zmian
-            self.painting_ax.set_ylim(0, 4)   # Y to teraz Z (wysokość), zakres 0-4
+            # Ustaw domyślne granice (będą aktualizowane dynamicznie podczas symulacji)
+            self.painting_ax.set_xlim(-1.5, 1.5)  
+            self.painting_ax.set_ylim(1.0, 4.0)   
             self.painting_ax.set_aspect('equal')
             self.painting_ax.axis('off')  # Bez osi - jak prawdziwe light painting
             self.painting_ax.set_title("Light Painting - Płaszczyzna pionowa (XZ)", color='white', fontsize=14)
@@ -1178,6 +1179,52 @@ class LightPaintingSimulator(tk.Tk):
         except ValueError as e:
             self.log_message(f"❌ Błąd parametrów: {e}")
     
+    def calculate_painting_bounds(self):
+        """Oblicza dynamiczne granice dla okna light painting na podstawie trajektorii"""
+        if not self.trajectory_points:
+            # Fallback gdy brak trajektorii
+            return -1.5, 1.5, 1.0, 4.0
+        
+        # Zbierz wszystkie pozycje X i Z
+        x_coords = []
+        z_coords = []
+        
+        for point in self.trajectory_points:
+            pos = point["actual_pos"]
+            x_coords.append(pos[0])  # X
+            z_coords.append(pos[2])  # Z (wysokość)
+        
+        if not x_coords or not z_coords:
+            return -1.5, 1.5, 1.0, 4.0
+        
+        # Znajdź min/max z marginesem
+        x_min, x_max = min(x_coords), max(x_coords)
+        z_min, z_max = min(z_coords), max(z_coords)
+        
+        # Dodaj 20% marginesu
+        x_margin = max(0.2, (x_max - x_min) * 0.2)
+        z_margin = max(0.2, (z_max - z_min) * 0.2)
+        
+        x_min_bounded = x_min - x_margin
+        x_max_bounded = x_max + x_margin
+        z_min_bounded = z_min - z_margin
+        z_max_bounded = z_max + z_margin
+        
+        # Upewnij się, że zakres nie jest zbyt mały
+        if (x_max_bounded - x_min_bounded) < 0.5:
+            center_x = (x_max_bounded + x_min_bounded) / 2
+            x_min_bounded = center_x - 0.25
+            x_max_bounded = center_x + 0.25
+            
+        if (z_max_bounded - z_min_bounded) < 0.5:
+            center_z = (z_max_bounded + z_min_bounded) / 2
+            z_min_bounded = center_z - 0.25
+            z_max_bounded = center_z + 0.25
+        
+        self.log_message(f"📏 Obliczone granice: X({x_min_bounded:.2f}, {x_max_bounded:.2f}), Z({z_min_bounded:.2f}, {z_max_bounded:.2f})")
+        
+        return x_min_bounded, x_max_bounded, z_min_bounded, z_max_bounded
+
     def generate_trajectory(self):
         """Generuje trajektorię z kinematyką odwrotną"""
         self.trajectory_points = []
@@ -1239,10 +1286,14 @@ class LightPaintingSimulator(tk.Tk):
         self.light_painting_3d_dots.clear()
         self.light_painting_lines_2d.clear()
         self.light_painting_lines_3d.clear()
+        
+        # Oblicz dynamiczne granice na podstawie trajektorii
+        x_min, x_max, z_min, z_max = self.calculate_painting_bounds()
+        
         if self.painting_ax is not None:
             self.painting_ax.clear()
-            self.painting_ax.set_xlim(-2, 2)
-            self.painting_ax.set_ylim(0, 4)
+            self.painting_ax.set_xlim(x_min, x_max)  # Dynamiczny zakres X
+            self.painting_ax.set_ylim(z_min, z_max)  # Dynamiczny zakres Z
             self.painting_ax.set_aspect('equal')
             self.painting_ax.axis('off')
             self.painting_ax.set_facecolor('black')
@@ -1417,8 +1468,15 @@ class LightPaintingSimulator(tk.Tk):
         # Wyczyść 2D canvas
         if self.painting_ax is not None:
             self.painting_ax.clear()
-            self.painting_ax.set_xlim(-2, 2)
-            self.painting_ax.set_ylim(0, 4)
+            # Sprawdź czy mamy trajektorię do obliczenia granic
+            if hasattr(self, 'trajectory_points') and self.trajectory_points:
+                x_min, x_max, z_min, z_max = self.calculate_painting_bounds()
+                self.painting_ax.set_xlim(x_min, x_max)
+                self.painting_ax.set_ylim(z_min, z_max)
+            else:
+                # Użyj domyślnych granic gdy brak trajektorii
+                self.painting_ax.set_xlim(-1.5, 1.5)
+                self.painting_ax.set_ylim(1.0, 4.0)
             self.painting_ax.set_aspect('equal')
             self.painting_ax.axis('off')
             self.painting_ax.set_facecolor('black')
