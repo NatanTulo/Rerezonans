@@ -454,6 +454,7 @@ class LightPaintingSimulator(tk.Tk):
         # Przycisk wczytywania obrazu
         ttk.Button(control_frame, text="📁 Wczytaj obraz", command=self.load_image).pack(side="left", padx=5)
         ttk.Button(control_frame, text="✏️ Rysuj kontury", command=self.process_image).pack(side="left", padx=5)
+        ttk.Button(control_frame, text="Pokaż wykryte krawędzie", command=self.show_edges).pack(side="left", padx=5)
         ttk.Button(control_frame, text="🚀 Start Light Painting", command=self.start_simulation).pack(side="left", padx=5)
         ttk.Button(control_frame, text="⏸️ Stop", command=self.stop_simulation).pack(side="left", padx=5)
         ttk.Button(control_frame, text="🗑️ Wyczyść", command=self.clear_simulation).pack(side="left", padx=5)
@@ -544,6 +545,459 @@ class LightPaintingSimulator(tk.Tk):
         else:
             self.log_message("⚠️ Używamy uproszczonej kinematyki (brak ikpy)")
     
+    def show_edges(self):
+        """Interaktywny edytor krawędzi z wizualizacją kroków przetwarzania"""
+        if self.image_processor.current_image is None:
+            messagebox.showwarning("Błąd", "Najpierw wczytaj obraz!")
+            return
+        
+        if not hasattr(self.image_processor, 'edge_paths') or not self.image_processor.edge_paths:
+            messagebox.showwarning("Błąd", "Najpierw wykryj krawędzie!")
+            return
+        
+        # Utwórz okno edytora
+        self.edges_window = tk.Toplevel(self)
+        self.edges_window.title("Interaktywny edytor krawędzi")
+        self.edges_window.geometry("1200x800")
+        
+        # Zmienne stanu edytora
+        self.current_step = 0
+        self.edit_mode = "view"
+        self.selected_edge = None
+        self.selected_point = None
+        self.show_drawing_order = False
+        
+        # Inicjalizuj dane
+        self.final_edges = [path.copy() for path in self.image_processor.edge_paths]
+        self.drawing_order = list(range(len(self.final_edges)))
+        
+        self.create_editor_interface()
+        self.process_all_steps()
+        self.show_step(0)  # Zacznij od pierwszego kroku
+
+    def create_editor_interface(self):
+        """Tworzy interfejs edytora krawędzi"""
+        
+        # Status przetwarzania na górze
+        status_frame = ttk.Frame(self.edges_window)
+        status_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.processing_status = ttk.Label(status_frame, text="Ładowanie danych...", foreground="orange")
+        self.processing_status.pack()
+        
+        # Panel kontrolny górny
+        top_control = ttk.Frame(self.edges_window)
+        top_control.pack(fill="x", padx=10, pady=5)
+        
+        # Nawigacja kroków
+        steps_frame = ttk.LabelFrame(top_control, text="Kroki przetwarzania", padding=5)
+        steps_frame.pack(side="left", fill="x", expand=True)
+        
+        self.step_buttons = []
+        step_names = ["1. Oryginalny", "2. Maska", "3. Canny", "4. Kontury", "5. Edycja"]
+        
+        for i, name in enumerate(step_names):
+            btn = ttk.Button(steps_frame, text=name, 
+                            command=lambda idx=i: self.show_step(idx))
+            btn.pack(side="left", padx=2)
+            self.step_buttons.append(btn)
+        
+        # Panel parametrów Canny
+        canny_frame = ttk.LabelFrame(top_control, text="Parametry Canny", padding=5)
+        canny_frame.pack(side="right", padx=(10, 0))
+        
+        ttk.Label(canny_frame, text="Dolny:").grid(row=0, column=0, sticky="w")
+        self.canny_low_var = tk.IntVar(value=50)
+        tk.Scale(canny_frame, from_=10, to=200, variable=self.canny_low_var, 
+                orient="horizontal", length=100, command=self.update_canny).grid(row=0, column=1)
+        
+        ttk.Label(canny_frame, text="Górny:").grid(row=1, column=0, sticky="w")
+        self.canny_high_var = tk.IntVar(value=150)
+        tk.Scale(canny_frame, from_=50, to=400, variable=self.canny_high_var,
+                orient="horizontal", length=100, command=self.update_canny).grid(row=1, column=1)
+        
+        # Główny obszar z dwoma panelami
+        main_area = ttk.Frame(self.edges_window)
+        main_area.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Lewy panel - wizualizacja
+        viz_frame = ttk.LabelFrame(main_area, text="Wizualizacja", padding=5)
+        viz_frame.pack(side="left", fill="both", expand=True)
+        
+        self.edges_fig = Figure(figsize=(10, 8))
+        self.edges_ax = self.edges_fig.add_subplot(111)
+        self.edges_canvas = FigureCanvasTkAgg(self.edges_fig, viz_frame)
+        self.edges_canvas.get_tk_widget().pack(fill="both", expand=True)
+        
+        # Obsługa zdarzeń myszy
+        self.edges_canvas.mpl_connect('button_press_event', self.on_canvas_click)
+        
+        # Prawy panel - kontrole edycji
+        edit_frame = ttk.LabelFrame(main_area, text="Edycja krawędzi", padding=5)
+        edit_frame.pack(side="right", fill="y", padx=(5, 0))
+        edit_frame.configure(width=250)
+        
+        # Status trybu
+        self.mode_label = ttk.Label(edit_frame, text="Tryb: Podgląd", foreground="blue")
+        self.mode_label.pack(pady=5)
+        
+        # Lista krawędzi
+        ttk.Label(edit_frame, text="Lista krawędzi:").pack(anchor="w", pady=(10, 2))
+        
+        listbox_frame = ttk.Frame(edit_frame)
+        listbox_frame.pack(fill="x", pady=2)
+        
+        self.edges_listbox = tk.Listbox(listbox_frame, height=6)
+        scrollbar_edges = ttk.Scrollbar(listbox_frame, orient="vertical", command=self.edges_listbox.yview)
+        self.edges_listbox.configure(yscrollcommand=scrollbar_edges.set)
+        
+        self.edges_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar_edges.pack(side="right", fill="y")
+        self.edges_listbox.bind('<<ListboxSelect>>', self.on_edge_select)
+        
+        # Przyciski zarządzania krawędziami
+        edge_mgmt_frame = ttk.Frame(edit_frame)
+        edge_mgmt_frame.pack(fill="x", pady=5)
+        
+        ttk.Button(edge_mgmt_frame, text="Nowa", width=8,
+                command=self.add_new_edge).pack(side="left", padx=1)
+        ttk.Button(edge_mgmt_frame, text="Usuń", width=8,
+                command=self.delete_selected_edge).pack(side="right", padx=1)
+        
+        # Tryby edycji punktów
+        ttk.Label(edit_frame, text="Tryby edycji:").pack(anchor="w", pady=(15, 2))
+        
+        modes_frame = ttk.Frame(edit_frame)
+        modes_frame.pack(fill="x")
+        
+        ttk.Button(modes_frame, text="Podgląd", 
+                command=lambda: self.set_edit_mode("view")).pack(fill="x", pady=1)
+        ttk.Button(modes_frame, text="Dodaj punkt", 
+                command=lambda: self.set_edit_mode("add_point")).pack(fill="x", pady=1)
+        ttk.Button(modes_frame, text="Usuń punkt", 
+                command=lambda: self.set_edit_mode("delete_point")).pack(fill="x", pady=1)
+        ttk.Button(modes_frame, text="Wstaw między", 
+                command=lambda: self.set_edit_mode("insert_point")).pack(fill="x", pady=1)
+        
+        # Panel kolejności
+        order_frame = ttk.LabelFrame(edit_frame, text="Kolejność", padding=5)
+        order_frame.pack(fill="x", pady=(15, 0))
+        
+        ttk.Button(order_frame, text="Pokaż kolejność", 
+                command=self.toggle_order_display).pack(fill="x", pady=1)
+        
+        order_buttons = ttk.Frame(order_frame)
+        order_buttons.pack(fill="x")
+        
+        ttk.Button(order_buttons, text="↑", width=3,
+                command=self.move_selected_up).pack(side="left", padx=1)
+        ttk.Button(order_buttons, text="↓", width=3,
+                command=self.move_selected_down).pack(side="right", padx=1)
+        
+        # Dolny panel - zatwierdzenie
+        bottom_frame = ttk.Frame(self.edges_window)
+        bottom_frame.pack(fill="x", padx=10, pady=5)
+        
+        ttk.Button(bottom_frame, text="Przelicz ścieżki", 
+                command=self.recalculate_paths).pack(side="left", padx=5)
+        ttk.Button(bottom_frame, text="Zatwierdź i zamknij", 
+                command=self.confirm_and_close).pack(side="right", padx=5)
+        
+        # Status
+        self.editor_status = ttk.Label(bottom_frame, text="Gotowy")
+        self.editor_status.pack(side="right", padx=(0, 20))
+
+    def process_all_steps(self):
+        """Przetwarza wszystkie kroki algorytmu"""
+        try:
+            self.processing_status.config(text="Przetwarzanie kroków...", foreground="orange")
+            
+            if self.image_processor.current_image is None:
+                self.processing_status.config(text="Błąd: Brak obrazu", foreground="red")
+                return
+            
+            # Krok 1: Oryginalny obraz (już mamy)
+            
+            # Krok 2: Maska obszaru 
+            self.area_mask = np.ones(self.image_processor.current_image.shape[:2], np.uint8) * 255
+            if hasattr(self.image_processor, 'drawn_contours') and self.image_processor.drawn_contours:
+                self.area_mask = np.zeros(self.image_processor.current_image.shape[:2], np.uint8)
+                for contour in self.image_processor.drawn_contours:
+                    cv.fillPoly(self.area_mask, [contour], 255)
+            
+            # Krok 3: Filtr Canny
+            gray = cv.cvtColor(self.image_processor.current_image, cv.COLOR_BGR2GRAY)
+            masked_gray = cv.bitwise_and(gray, gray, mask=self.area_mask)
+            self.canny_edges = cv.Canny(masked_gray, self.canny_low_var.get(), self.canny_high_var.get())
+            
+            # Krok 4: Wykrywanie konturów
+            contours, _ = cv.findContours(self.canny_edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+            self.detected_contours = [[(int(pt[0][0]), int(pt[0][1])) for pt in cnt] for cnt in contours if len(cnt) > 3]
+            
+            self.processing_status.config(text=f"Przetworzono {len(self.detected_contours)} konturów", foreground="green")
+            
+        except Exception as e:
+            self.processing_status.config(text=f"Błąd przetwarzania: {e}", foreground="red")
+            print(f"Błąd w process_all_steps: {e}")
+
+    def show_step(self, step):
+        """Pokazuje określony krok przetwarzania"""
+        self.current_step = step
+        
+        # Podświetl aktywny przycisk
+        for i, btn in enumerate(self.step_buttons):
+            btn.configure(style="TButton")
+        self.step_buttons[step].configure(style="Accent.TButton")
+        
+        self.update_step_display()
+
+    def update_step_display(self):
+        """Aktualizuje wyświetlanie aktualnego kroku"""
+        if not hasattr(self, 'edges_ax'):
+            return
+            
+        self.edges_ax.clear()
+        
+        try:
+            if self.current_step == 0:  # Oryginalny obraz
+                img_rgb = cv.cvtColor(self.image_processor.current_image, cv.COLOR_BGR2RGB)
+                self.edges_ax.imshow(img_rgb)
+                self.edges_ax.set_title("Oryginalny obraz")
+                
+            elif self.current_step == 1:  # Maska obszaru
+                if hasattr(self, 'area_mask'):
+                    self.edges_ax.imshow(self.area_mask, cmap='gray')
+                    self.edges_ax.set_title("Maska obszaru do przetwarzania")
+                
+            elif self.current_step == 2:  # Filtr Canny
+                if hasattr(self, 'canny_edges'):
+                    self.edges_ax.imshow(self.canny_edges, cmap='gray')
+                    self.edges_ax.set_title(f"Filtr Canny ({self.canny_low_var.get()}, {self.canny_high_var.get()})")
+                
+            elif self.current_step == 3:  # Wykryte kontury
+                if hasattr(self, 'detected_contours'):
+                    img_rgb = cv.cvtColor(self.image_processor.current_image, cv.COLOR_BGR2RGB)
+                    self.edges_ax.imshow(img_rgb, alpha=0.5)
+                    
+                    colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown']
+                    for i, contour in enumerate(self.detected_contours):
+                        if len(contour) > 1:
+                            x_coords = [p[0] for p in contour]
+                            y_coords = [p[1] for p in contour]
+                            color = colors[i % len(colors)]
+                            self.edges_ax.plot(x_coords, y_coords, color=color, linewidth=2, 
+                                            label=f'Kontur {i+1}' if i < 10 else None)
+                    
+                    self.edges_ax.set_title(f"Wykryte kontury ({len(self.detected_contours)})")
+                    if len(self.detected_contours) <= 10:
+                        self.edges_ax.legend()
+                        
+            elif self.current_step == 4:  # Finalne krawędzie
+                self.display_final_edges()
+            
+            self.edges_ax.axis('equal')
+            self.edges_ax.set_xlim(0, self.image_processor.current_image.shape[1])
+            self.edges_ax.set_ylim(self.image_processor.current_image.shape[0], 0)
+            
+        except Exception as e:
+            self.edges_ax.text(0.5, 0.5, f"Błąd wyświetlania: {e}", 
+                            transform=self.edges_ax.transAxes, ha='center', va='center')
+            print(f"Błąd w update_step_display: {e}")
+            
+        self.edges_canvas.draw()
+
+    def display_final_edges(self):
+        """Wyświetla finalne krawędzie z możliwością edycji"""
+        if self.image_processor.current_image is not None:
+            img_rgb = cv.cvtColor(self.image_processor.current_image, cv.COLOR_BGR2RGB)
+            self.edges_ax.imshow(img_rgb, alpha=0.3)
+        
+        colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
+        
+        # Wyczyść i aktualizuj listę krawędzi
+        self.edges_listbox.delete(0, tk.END)
+        
+        for i, edge_idx in enumerate(self.drawing_order):
+            if edge_idx < len(self.final_edges):
+                edge = self.final_edges[edge_idx]
+                color = colors[edge_idx % len(colors)]
+                
+                if len(edge) > 1:
+                    x_coords = [p[0] for p in edge]
+                    y_coords = [p[1] for p in edge]
+                    
+                    # Podświetl wybraną krawędź
+                    linewidth = 3 if edge_idx == self.selected_edge else 2
+                    alpha = 1.0 if edge_idx == self.selected_edge else 0.7
+                    
+                    self.edges_ax.plot(x_coords, y_coords, color=color, 
+                                    linewidth=linewidth, alpha=alpha)
+                    
+                    # Pokaż punkty w trybie edycji
+                    if self.edit_mode != "view" and edge_idx == self.selected_edge:
+                        self.edges_ax.scatter(x_coords, y_coords, c=color, s=50, 
+                                            edgecolors='white', linewidths=2, zorder=5)
+                        
+                        # Numeruj punkty
+                        for j, (x, y) in enumerate(edge):
+                            self.edges_ax.annotate(str(j), (x, y), xytext=(5, 5), 
+                                                textcoords='offset points', fontsize=10,
+                                                bbox=dict(boxstyle='round,pad=0.2', 
+                                                        facecolor='white', alpha=0.9),
+                                                zorder=6)
+                
+                # Dodaj do listy
+                self.edges_listbox.insert(tk.END, f"Krawędź {edge_idx+1} ({len(edge)} pkt)")
+        
+        # Pokaż kolejność jeśli włączona
+        if self.show_drawing_order:
+            for i, edge_idx in enumerate(self.drawing_order):
+                if edge_idx < len(self.final_edges) and len(self.final_edges[edge_idx]) > 0:
+                    start_point = self.final_edges[edge_idx][0]
+                    self.edges_ax.text(start_point[0], start_point[1], str(i+1), 
+                                    fontsize=14, fontweight='bold',
+                                    bbox=dict(boxstyle="circle,pad=0.3", 
+                                            facecolor='yellow', alpha=0.9),
+                                    ha='center', va='center', zorder=7)
+        
+        self.edges_ax.set_title(f"Finalne krawędzie - {self.edit_mode}")
+
+    # Dodaj podstawowe metody obsługi
+    def update_canny(self, event=None):
+        """Aktualizuje filtr Canny"""
+        if hasattr(self, 'current_step'):
+            self.process_all_steps()
+            if self.current_step in [2, 3]:
+                self.update_step_display()
+
+    def set_edit_mode(self, mode):
+        """Ustawia tryb edycji"""
+        self.edit_mode = mode
+        mode_texts = {
+            "view": "Podgląd",
+            "add_point": "Dodaj punkt",
+            "delete_point": "Usuń punkt", 
+            "insert_point": "Wstaw punkt"
+        }
+        
+        self.mode_label.config(text=f"Tryb: {mode_texts.get(mode, mode)}")
+        
+        if self.current_step == 4:
+            self.update_step_display()
+
+    def on_canvas_click(self, event):
+        """Obsługuje kliknięcia na canvas"""
+        # Sprawdź czy jesteśmy w oknie edytora i czy mamy odpowiednie atrybuty
+        if not hasattr(self, 'edit_mode') or not hasattr(self, 'edges_ax'):
+            return
+            
+        if event.inaxes != self.edges_ax or event.xdata is None or event.ydata is None:
+            return
+        
+        # Sprawdź czy jesteśmy w trybie edycji (używaj edit_mode zamiast editing_mode)
+        if self.edit_mode == "view":
+            x, y = int(event.xdata), int(event.ydata)
+            self.select_nearest_edge(x, y)
+
+    def select_nearest_edge(self, x, y):
+        """Wybiera najbliższą krawędź"""
+        min_dist = float('inf')
+        closest_edge = None
+        
+        for edge_idx, edge in enumerate(self.final_edges):
+            for px, py in edge:
+                dist = ((x - px) ** 2 + (y - py) ** 2) ** 0.5
+                if dist < min_dist and dist < 20:
+                    min_dist = dist
+                    closest_edge = edge_idx
+        
+        if closest_edge is not None:
+            self.selected_edge = closest_edge
+            self.update_step_display()
+            self.editor_status.config(text=f"Wybrano krawędź {closest_edge+1}")
+
+    # Podstawowe metody do dokończenia
+    def on_edge_select(self, event):
+        pass
+
+    def add_new_edge(self):
+        pass
+
+    def delete_selected_edge(self):
+        pass
+
+    def toggle_order_display(self):
+        self.show_drawing_order = not self.show_drawing_order
+        if self.current_step == 4:
+            self.update_step_display()
+
+    def move_selected_up(self):
+        pass
+
+    def move_selected_down(self):
+        pass
+
+    def recalculate_paths(self):
+        """Przelicza ścieżki"""
+        ordered_edges = [self.final_edges[i] for i in self.drawing_order if i < len(self.final_edges)]
+        self.image_processor.edge_paths = ordered_edges
+        self.editor_status.config(text=f"Przeliczono {len(ordered_edges)} ścieżek")
+
+    def confirm_and_close(self):
+        """Zatwierdza i zamyka"""
+        self.recalculate_paths()
+        self.log_message(f"Zatwierdzono {len(self.image_processor.edge_paths)} krawędzi z edytora")
+        self.edges_window.destroy()
+        
+    def on_canvas_click(self, event):
+        """Obsługuje kliknięcia na canvas"""
+        if not self.editing_mode or not self.edit_mode or event.inaxes != self.edges_ax:
+            return
+        
+        x, y = int(event.xdata), int(event.ydata)
+        
+        # Znajdź najbliższą krawędź i punkt
+        min_dist = float('inf')
+        closest_edge = None
+        closest_point = None
+        
+        for edge_idx, edge in enumerate(self.final_edges):
+            for point_idx, (px, py) in enumerate(edge):
+                dist = ((x - px) ** 2 + (y - py) ** 2) ** 0.5
+                if dist < min_dist and dist < 20:  # 20 pikseli tolerancji
+                    min_dist = dist
+                    closest_edge = edge_idx
+                    closest_point = point_idx
+        
+        if closest_edge is not None:
+            self.selected_edge = closest_edge
+            self.selected_point = closest_point
+            self.edges_listbox.selection_clear(0, tk.END)
+            
+            # Znajdź pozycję w drawing_order
+            try:
+                list_idx = self.drawing_order.index(closest_edge)
+                self.edges_listbox.selection_set(list_idx)
+            except ValueError:
+                pass
+            
+            self.update_step_display()
+            self.editor_status.config(text=f"Wybrano: krawędź {closest_edge+1}, punkt {closest_point}")
+
+    def recalculate_paths(self):
+        """Przelicza ścieżki na podstawie edytowanych krawędzi"""
+        # Aktualizuj edge_paths w image_processor
+        ordered_edges = [self.final_edges[i] for i in self.drawing_order if i < len(self.final_edges)]
+        self.image_processor.edge_paths = ordered_edges
+        
+        self.editor_status.config(text=f"Przeliczono {len(ordered_edges)} ścieżek")
+
+    def confirm_and_close(self):
+        """Zatwierdza zmiany i zamyka edytor"""
+        self.recalculate_paths()
+        self.log_message(f"Zatwierdzono {len(self.image_processor.edge_paths)} krawędzi z edytora")
+        self.edges_window.destroy()
+
     def on_accuracy_changed(self, event=None):
         """Obsługuje zmianę poziomu dokładności"""
         global CONTOUR_APPROXIMATION_FACTOR, EDGE_POINT_STEP, MAX_POINTS_PER_PATH
