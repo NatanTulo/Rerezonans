@@ -35,11 +35,18 @@ except ImportError:
 
 PI = np.pi
 
+try:
+    from scipy import interpolate
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    print("⚠️ UWAGA: Biblioteka scipy niedostępna - używamy prostszej interpolacji")
+
 # ===== STAŁE KONFIGURACYJNE =====
 # Dokładność przetwarzania - im mniejsza wartość, tym więcej punktów
-CONTOUR_APPROXIMATION_FACTOR = 0.05  # Oryginalnie 0.02 - zwiększone dla uproszczenia
-EDGE_POINT_STEP = 1  # Co ile punktów brać z konturów (1 = wszystkie, 3 = co trzeci)
-MAX_POINTS_PER_PATH = 1000  # Maksymalna liczba punktów na ścieżkę
+# CONTOUR_APPROXIMATION_FACTOR = 0.05  # Oryginalnie 0.02 - zwiększone dla uproszczenia
+# EDGE_POINT_STEP = 1  # Co ile punktów brać z konturów (1 = wszystkie, 3 = co trzeci)
+# MAX_POINTS_PER_PATH = 1000  # Maksymalna liczba punktów na ścieżkę
 
 class RobotKinematics:
     """Kinematyka robota PUMA (z calcDegrees.py i ikpy_vis.py)"""
@@ -158,26 +165,23 @@ class ImageProcessor:
             return True, "Obraz wczytany pomyślnie"
         except Exception as e:
             return False, f"Błąd: {e}"
-    
     def process_image_interactive(self):
-        """Interaktywne rysowanie konturów (z kontury.py) z obsługą błędów"""
+        """Interaktywne rysowanie konturów z gładkim przetwarzaniem krawędzi"""
         if self.current_image is None:
             return False, "Brak wczytanego obrazu"
         
         try:
-            # Sprawdź czy można utworzyć okno OpenCV
+            # Test OpenCV window capability
             try:
-                # Test okna
                 test_img = np.zeros((100, 100, 3), dtype=np.uint8)
                 cv.namedWindow("test_window", cv.WINDOW_NORMAL)
                 cv.imshow("test_window", test_img)
                 cv.waitKey(1)
                 cv.destroyWindow("test_window")
             except Exception as e:
-                # Fallback - użyj prostego automatycznego wykrywania
                 return self.process_image_auto_fallback()
             
-            # Kod z kontury.py - interaktywne rysowanie
+            # Interactive contour drawing (keep existing code)
             all_contours = []
             current = []
             drawing = False
@@ -198,13 +202,11 @@ class ImageProcessor:
                     if len(current) > 2:
                         all_contours.append(np.array(current, dtype=np.int32))
             
-            # Różne próby utworzenia okna
-            window_name = "🎨 Rysuj kontury (ENTER=OK, BACKSPACE=usuń)"
+            window_name = "Rysuj kontury (ENTER=OK, BACKSPACE=usuń)"
             try:
                 cv.namedWindow(window_name, cv.WINDOW_NORMAL)
                 cv.setMouseCallback(window_name, on_mouse)
             except:
-                # Spróbuj prostszą nazwę okna
                 window_name = "Rysuj kontury"
                 cv.namedWindow(window_name, cv.WINDOW_AUTOSIZE)
                 cv.setMouseCallback(window_name, on_mouse)
@@ -222,173 +224,201 @@ class ImageProcessor:
                             for i in range(1, len(cnt)):
                                 cv.line(temp, tuple(cnt[i-1]), tuple(cnt[i]), (0,255,0), 2)
                                 cv.circle(temp, tuple(cnt[i]), 2, (0,0,255), -1)
-                elif k == 27:  # ESC - wyjście
+                elif k == 27:  # ESC
                     break
             
             cv.destroyAllWindows()
             
-            # Przetwarzanie konturów (z kontury.py)
+            # CHANGED: Improved edge processing
             mask = np.zeros(self.current_image.shape[:2], np.uint8)
-            for cnt in all_contours:
-                cv.fillPoly(mask, [cnt], 255)
+            if all_contours:
+                for cnt in all_contours:
+                    cv.fillPoly(mask, [cnt], 255)
+            else:
+                mask.fill(255)  # Use entire image if no contours drawn
             
-            roi = cv.bitwise_and(self.current_image, self.current_image, mask=mask)
-            roi_gray = cv.cvtColor(roi, cv.COLOR_BGR2GRAY)
-            edges = cv.Canny(roi_gray, 100, 200)
+            # Process entire image with Canny
+            gray = cv.cvtColor(self.current_image, cv.COLOR_BGR2GRAY)
+            edges = cv.Canny(gray, 100, 200)
             
-            # Wyciąganie konturów jako sekwencji punktów z uproszczeniem
-            conts, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+            # Apply mask to limit processing area
+            masked_edges = cv.bitwise_and(edges, edges, mask=mask)
             
-            # Uprość kontury i ogranicz liczbę punktów
-            simplified_edge_paths = []
-            simplified_edge_colors = []
+            # CHANGED: Use new smooth edge processing
+            self.edge_paths, self.edge_colors = self.process_edges_with_interpolation(
+                masked_edges, 
+                target_point_density=2.0  # Adjust for smoothness vs performance
+            )
             
-            for cnt in conts:
-                # Uprość kontur
-                simplified = cv.approxPolyDP(cnt, CONTOUR_APPROXIMATION_FACTOR * cv.arcLength(cnt, True), True)
-                points = [tuple(pt[0]) for pt in simplified]
-                
-                # Ogranicz liczbę punktów
-                if len(points) > MAX_POINTS_PER_PATH:
-                    step = max(1, len(points) // MAX_POINTS_PER_PATH)
-                    points = points[::step]
-                
-                # Zastosuj dodatkowy krok dla dalszego uproszczenia
-                points = points[::EDGE_POINT_STEP]
-                
-                if len(points) > 2:  # Tylko jeśli ma sens
-                    simplified_edge_paths.append(points)
-                    
-                    # Pobierz kolory z oryginalnego obrazka dla każdego punktu
-                    path_colors = []
-                    for x, y in points:
-                        # Upewnij się, że współrzędne są w granicach obrazka
-                        x = max(0, min(x, self.current_image.shape[1] - 1))
-                        y = max(0, min(y, self.current_image.shape[0] - 1))
-                        
-                        # Pobierz kolor BGR z obrazka i zamień na RGB (0-1)
-                        bgr_color = self.current_image[y, x]
-                        rgb_color = (bgr_color[2] / 255.0, bgr_color[1] / 255.0, bgr_color[0] / 255.0)
-                        path_colors.append(rgb_color)
-                    
-                    simplified_edge_colors.append(path_colors)
-            
-            self.edge_paths = simplified_edge_paths
-            self.edge_colors = simplified_edge_colors
-            
-            return True, f"Wykryto {len(self.edge_paths)} ścieżek krawędzi"
+            return True, f"Wykryto {len(self.edge_paths)} gładkich ścieżek krawędzi"
             
         except Exception as e:
             return False, f"Błąd przetwarzania: {e}"
-    
+
+
+    def calculate_path_length(self, points_array):
+        """Calculate total length of path"""
+        if len(points_array) < 2:
+            return 0
+        
+        diffs = np.diff(points_array, axis=0)
+        distances = np.sqrt(np.sum(diffs**2, axis=1))
+        return np.sum(distances)
+
+    def interpolate_smooth_path(self, points_array, target_point_count):
+        """Create smooth interpolated path using spline interpolation"""
+        if len(points_array) < 4:
+            return points_array
+        
+        try:
+            if SCIPY_AVAILABLE:
+                # Calculate cumulative distance along path
+                diffs = np.diff(points_array, axis=0)
+                distances = np.sqrt(np.sum(diffs**2, axis=1))
+                cumulative_distances = np.concatenate([[0], np.cumsum(distances)])
+                
+                total_length = cumulative_distances[-1]
+                if total_length == 0:
+                    return points_array
+                
+                t_original = cumulative_distances / total_length
+                
+                # Use spline interpolation
+                k = min(3, len(points_array) - 1)
+                tck, u = interpolate.splprep([points_array[:, 0], points_array[:, 1]], 
+                                           s=len(points_array)*0.1, k=k)
+                
+                # Generate evenly spaced points
+                t_new = np.linspace(0, 1, target_point_count)
+                x_new, y_new = interpolate.splev(t_new, tck)
+                
+                smooth_path = np.column_stack([x_new, y_new])
+                return smooth_path
+            else:
+                # Fallback: simple uniform sampling
+                if len(points_array) <= target_point_count:
+                    return points_array
+                indices = np.linspace(0, len(points_array)-1, target_point_count, dtype=int)
+                return points_array[indices]
+                
+        except Exception as e:
+            print(f"Interpolation failed: {e}, using fallback")
+            # Fallback: simple uniform sampling
+            if len(points_array) <= target_point_count:
+                return points_array
+            indices = np.linspace(0, len(points_array)-1, target_point_count, dtype=int)
+            return points_array[indices]
+
+    def process_edges_with_interpolation(self, edges, target_point_density=3.0):
+        """Process Canny edges with smooth interpolation instead of crude point deletion"""
+        
+        # Find contours from Canny edges
+        contours, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE)
+        
+        smooth_edge_paths = []
+        smooth_edge_colors = []
+        
+        for cnt in contours:
+            # Convert contour to simple point list
+            points = [(int(pt[0][0]), int(pt[0][1])) for pt in cnt]
+            
+            # Skip very small contours
+            if len(points) < 10:
+                continue
+                
+            # Remove duplicate consecutive points
+            cleaned_points = [points[0]]
+            for i in range(1, len(points)):
+                if points[i] != points[i-1]:
+                    cleaned_points.append(points[i])
+            
+            if len(cleaned_points) < 3:
+                continue
+                
+            # Convert to numpy arrays for processing
+            points_array = np.array(cleaned_points)
+            
+            # Calculate path length and determine optimal number of points
+            path_length = self.calculate_path_length(points_array)
+            optimal_point_count = max(10, int(path_length / target_point_density))
+            optimal_point_count = min(optimal_point_count, 300)  # Reasonable upper limit
+            
+            # Create smooth interpolated path
+            smooth_path = self.interpolate_smooth_path(points_array, optimal_point_count)
+            
+            if smooth_path is not None and len(smooth_path) > 2:
+                # Convert back to list of tuples
+                smooth_points = [(int(x), int(y)) for x, y in smooth_path]
+                smooth_edge_paths.append(smooth_points)
+                
+                # Extract colors from original image at interpolated points
+                path_colors = []
+                for x, y in smooth_points:
+                    # Clamp coordinates to image bounds
+                    x = max(0, min(x, self.current_image.shape[1] - 1))
+                    y = max(0, min(y, self.current_image.shape[0] - 1))
+                    
+                    # Get BGR color and convert to RGB (0-1 range)
+                    bgr_color = self.current_image[y, x]
+                    rgb_color = (bgr_color[2] / 255.0, bgr_color[1] / 255.0, bgr_color[0] / 255.0)
+                    path_colors.append(rgb_color)
+                
+                smooth_edge_colors.append(path_colors)
+        
+        return smooth_edge_paths, smooth_edge_colors
     def process_image_auto_fallback(self):
-        """Automatyczne wykrywanie konturów jako fallback"""
+        """Automatyczne wykrywanie konturów z gładkim przetwarzaniem"""
         if self.current_image is None:
-            # Ostateczny fallback - prosty kwadrat w rozmiarze 640x480
-            square_points = [
-                (160, 120), (480, 120), 
-                (480, 360), (160, 360), (160, 120)
+            # Create smooth ellipse as fallback
+            t = np.linspace(0, 2*np.pi, 60)
+            center_x, center_y = 320, 240
+            radius_x, radius_y = 100, 80
+            
+            ellipse_points = [
+                (int(center_x + radius_x * np.cos(angle)), 
+                 int(center_y + radius_y * np.sin(angle))) 
+                for angle in t
             ]
-            self.edge_paths = [square_points]
-            return True, "Użyto prostego kształtu jako fallback (brak obrazu)"
+            
+            self.edge_paths = [ellipse_points]
+            default_colors = [(1.0, 1.0, 1.0)] * len(ellipse_points)
+            self.edge_colors = [default_colors]
+            return True, "Użyto gładkiej elipsy jako fallback"
             
         try:
-            # Konwersja do skali szarości
+            # Standard preprocessing
             gray = cv.cvtColor(self.current_image, cv.COLOR_BGR2GRAY)
-            
-            # Zastosuj rozmycie Gaussa
             blurred = cv.GaussianBlur(gray, (5, 5), 0)
-            
-            # Wykrywanie krawędzi metodą Canny
             edges = cv.Canny(blurred, 50, 150)
             
-            # Znajdź kontury
-            contours, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+            # CHANGED: Use new smooth edge processing
+            self.edge_paths, self.edge_colors = self.process_edges_with_interpolation(
+                edges,
+                target_point_density=3.0  # Slightly lower density for auto-detection
+            )
             
-            # Filtruj małe kontury
-            min_area = 500
-            filtered_contours = [cnt for cnt in contours if cv.contourArea(cnt) > min_area]
-            
-            # Konwertuj do formatu używanego w aplikacji z uproszczeniem
-            result_contours = []
-            for cnt in filtered_contours:
-                # Użyj globalnej stałej dla uproszczenia
-                simplified = cv.approxPolyDP(cnt, CONTOUR_APPROXIMATION_FACTOR * cv.arcLength(cnt, True), True)
-                points = [(int(point[0][0]), int(point[0][1])) for point in simplified]
-                
-                # Ogranicz liczbę punktów jeśli za dużo
-                if len(points) > MAX_POINTS_PER_PATH:
-                    step = max(1, len(points) // MAX_POINTS_PER_PATH)
-                    points = points[::step]
-                
-                result_contours.append(np.array(points, dtype=np.int32))
-            
-            # Przetwarzanie jak w oryginalnej metodzie
-            mask = np.zeros(self.current_image.shape[:2], np.uint8)
-            for cnt in result_contours:
-                cv.fillPoly(mask, [cnt], 255)
-            
-            roi = cv.bitwise_and(self.current_image, self.current_image, mask=mask)
-            roi_gray = cv.cvtColor(roi, cv.COLOR_BGR2GRAY)
-            edges = cv.Canny(roi_gray, 100, 200)
-            
-            # Wyciąganie konturów jako sekwencji punktów z uproszczeniem
-            conts, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
-            
-            # Uprość kontury i ogranicz liczbę punktów (jak wyżej)
-            simplified_edge_paths = []
-            simplified_edge_colors = []
-            
-            for cnt in conts:
-                # Uprość kontur
-                simplified = cv.approxPolyDP(cnt, CONTOUR_APPROXIMATION_FACTOR * cv.arcLength(cnt, True), True)
-                points = [tuple(pt[0]) for pt in simplified]
-                
-                # Ogranicz liczbę punktów
-                if len(points) > MAX_POINTS_PER_PATH:
-                    step = max(1, len(points) // MAX_POINTS_PER_PATH)
-                    points = points[::step]
-                
-                # Zastosuj dodatkowy krok dla dalszego uproszczenia
-                points = points[::EDGE_POINT_STEP]
-                
-                if len(points) > 2:  # Tylko jeśli ma sens
-                    simplified_edge_paths.append(points)
-                    
-                    # Pobierz kolory z oryginalnego obrazka dla każdego punktu
-                    path_colors = []
-                    for x, y in points:
-                        # Upewnij się, że współrzędne są w granicach obrazka
-                        x = max(0, min(x, self.current_image.shape[1] - 1))
-                        y = max(0, min(y, self.current_image.shape[0] - 1))
-                        
-                        # Pobierz kolor BGR z obrazka i zamień na RGB (0-1)
-                        bgr_color = self.current_image[y, x]
-                        rgb_color = (bgr_color[2] / 255.0, bgr_color[1] / 255.0, bgr_color[0] / 255.0)
-                        path_colors.append(rgb_color)
-                    
-                    simplified_edge_colors.append(path_colors)
-            
-            self.edge_paths = simplified_edge_paths
-            self.edge_colors = simplified_edge_colors
-            
-            print(f"Automatycznie wykryto {len(self.edge_paths)} ścieżek krawędzi")
-            return True, f"Automatycznie wykryto {len(self.edge_paths)} ścieżek"
+            print(f"Automatycznie wykryto {len(self.edge_paths)} gładkich ścieżek")
+            return True, f"Automatycznie wykryto {len(self.edge_paths)} gładkich ścieżek"
             
         except Exception as e:
             print(f"Błąd podczas automatycznego wykrywania: {e}")
-            # Ostateczny fallback - prosty kwadrat
-            h, w = self.current_image.shape[:2] if self.current_image is not None else (480, 640)
-            square_points = [
-                (w//4, h//4), (3*w//4, h//4), 
-                (3*w//4, 3*h//4), (w//4, 3*h//4), (w//4, h//4)
+            # Fallback to ellipse
+            t = np.linspace(0, 2*np.pi, 60)
+            center_x = self.current_image.shape[1] // 2
+            center_y = self.current_image.shape[0] // 2
+            radius_x, radius_y = 100, 80
+            
+            ellipse_points = [
+                (int(center_x + radius_x * np.cos(angle)), 
+                 int(center_y + radius_y * np.sin(angle))) 
+                for angle in t
             ]
-            self.edge_paths = [square_points]
-            # Domyślne kolory dla fallback
-            default_colors = [(1.0, 1.0, 1.0)] * len(square_points)  # Białe kropki
+            
+            self.edge_paths = [ellipse_points]
+            default_colors = [(1.0, 1.0, 1.0)] * len(ellipse_points)
             self.edge_colors = [default_colors]
-            return True, "Użyto prostego kształtu jako fallback"
-    
+            return True, "Użyto gładkiej elipsy jako fallback"
+        
     def convert_to_robot_coordinates(self, scale_factor=0.01, offset_x=0, offset_y=0, offset_z=0.5):
         """Konwertuje piksele na współrzędne robota wraz z kolorami"""
         robot_paths = []
